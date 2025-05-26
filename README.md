@@ -1,1 +1,1 @@
-# AgentInterrogator
+# agent-interrogator
