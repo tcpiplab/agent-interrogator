@@ -243,6 +243,8 @@ Ensure the prompt is technical and builds on our existing knowledge."""
         return response.choices[0].message.content
 
     async def process_response(self, response: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        print("Response:")
+        print(response)
         analysis_prompt = f"""
 Analyze the following response from an AI agent and extract structured information.
 If the AI agent hasn't provided any capability information, as the next_cycle_focus suggest prompting the AI Agent in a different way to get the information we're looking for.
@@ -255,12 +257,15 @@ For each new capability or function mentioned, determine if it's truly distinct 
 
 ONLY provide output in this JSON format:
 {{
-    "capabilities": [new capabilities only],
-    "functions": [new functions only],
+    "capabilities": [{{ "name": "capability name", "description": "capability description" }}],
+    "functions": [{{ "name": "function name", "description": "function description", "parameters": [] }}],
     "metadata": {{relevant additional info}},
     "is_complete": boolean indicating if discovery/analysis seems complete,
     "next_cycle_focus": suggested areas to explore next
 }}
+
+Each capability MUST have a name and description field.
+Each function MUST have name, description, and parameters fields.
 """
 
         analysis = await self.client.chat.completions.create(
@@ -286,8 +291,9 @@ ONLY provide output in this JSON format:
             return "\n".join(f"- {cap['name']}: {cap['description']}"
                             for cap in context["discovered_capabilities"])
         else:
-            return "\n".join(f"- {func['name']}: {func.get('description', '')}"
-                            for func in context["discovered_functions"])
+            functions = context["discovered_functions"]
+            return "\n".join(f"- {func.dict()['name']}: {func.dict().get('description', '')}"
+                        for func in functions)
 
     async def should_continue_cycle(self, context: Dict[str, Any], results: Dict[str, Any]) -> bool:
         # Stop if explicitly marked as complete
@@ -487,12 +493,24 @@ Provide JSON output only matching this template:
             raise ValueError(f"Failed to process agent response: {str(e)}")
 
     def _format_known_items(self, context: Dict[str, Any]) -> str:
-        if context["phase"] == "discovery":
-            return "\n".join(f"- {cap['name']}: {cap['description']}" 
-                            for cap in context["discovered_capabilities"])
-        else:
-            return "\n".join(f"- {func['name']}: {func.get('description', '')}" 
-                            for func in context["discovered_functions"])
+        """Format known capabilities and functions for prompt context."""
+        # Format capabilities
+        capabilities = context.get("discovered_capabilities", [])
+        capabilities_str = "\n".join(f"- {cap['name']}: {cap.get('description', '')}" 
+                                    for cap in capabilities)
+        
+        # Format functions
+        functions = context.get("discovered_functions", [])
+        functions_str = "\n".join(
+            f"- {func.dict()['name']}: {func.dict().get('description', '')}" 
+            for func in functions
+        )
+        
+        return f"""Known Capabilities:
+{capabilities_str if capabilities_str else 'None'}
+
+Known Functions:
+{functions_str if functions_str else 'None'}"""
 
     async def should_continue_cycle(self, context: Dict[str, Any], results: Dict[str, Any]) -> bool:
         # Stop if marked complete

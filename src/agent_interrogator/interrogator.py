@@ -66,13 +66,20 @@ class AgentInterrogator:
             # Generate and send prompt
             prompt = await self.llm.generate_prompt(context)
             response = await self.agent_callback(prompt)
+            print('Discovery response before calling process_response: ', response)
             previous_responses.append(response)
             
             # Process response
             result = await self.llm.process_response(response, context)
             
-            # Add new capabilities
-            new_capabilities = [Capability(**cap) for cap in result.get("capabilities", [])]
+            # Add new capabilities with validation
+            new_capabilities = []
+            for cap in result.get("capabilities", []):
+                if isinstance(cap, dict) and "name" in cap and "description" in cap:
+                    try:
+                        new_capabilities.append(Capability(**cap))
+                    except Exception as e:
+                        print(f"Error creating capability: {e}")
             discovered_capabilities.extend(new_capabilities)
             
             # Check if we should continue discovery
