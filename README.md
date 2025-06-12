@@ -1,5 +1,5 @@
 # Agent Interrogator
-
+<img src="assets/logo.webp" alt="Project Logo" width="200" style="vertical-align:middle; margin-right:10px;" />
 A Python framework for systematically identifying and analyzing AI agent capabilities through automated interrogation. It supports iterative discovery and analysis cycles to exhaustively uncover all supported capabilities and function arguments.
 
 ## Features
