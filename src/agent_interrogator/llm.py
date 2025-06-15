@@ -1,11 +1,18 @@
 """LLM interface implementations."""
 
 import json
+import platform
 from abc import ABC, abstractmethod
 from typing import Dict, List, Any, Optional, Awaitable, Callable
 
 from openai import AsyncOpenAI
 from transformers import pipeline
+
+try:
+    import ane_transformers
+    HAS_ANE = platform.processor() in ['arm', 'arm64']
+except ImportError:
+    HAS_ANE = False
 
 from .config import InterrogationConfig, LLMConfig, ModelProvider
 from .models import Function, Parameter
@@ -27,13 +34,15 @@ from .prompt_templates import (
 class LLMInterface(ABC):
     """Abstract base class for LLM implementations."""
     
-    def __init__(self, config: InterrogationConfig):
+    def __init__(self, config: InterrogationConfig, output_manager):
         """Initialize the LLM interface.
         
         Args:
             config: Full interrogation configuration
+            output_manager: OutputManager instance for controlled output
         """
         self.config = config
+        self.output = output_manager
     
     @abstractmethod
     async def generate_prompt(self, context: Dict[str, Any]) -> str:
@@ -129,12 +138,11 @@ class LLMInterface(ABC):
 class OpenAILLM(LLMInterface):
     """OpenAI-based LLM implementation."""
     
-    def __init__(self, config: InterrogationConfig):
-        super().__init__(config)
+    def __init__(self, config: InterrogationConfig, output_manager):
+        super().__init__(config, output_manager)
         if config.llm.provider != ModelProvider.OPENAI:
-            raise ValueError("Invalid provider for OpenAILLM")
-            
-        # Configure OpenAI client
+            raise ValueError("OpenAILLM requires provider to be OPENAI")
+        
         self.client = AsyncOpenAI(api_key=config.llm.api_key)
         self.model_kwargs = config.llm.model_kwargs
 
@@ -209,8 +217,8 @@ class OpenAILLM(LLMInterface):
             context=context,
             response=response
         )
-        print("Discovery Prompt:")
-        print(discovery_prompt)
+        self.output.print_verbose("[bold cyan]Discovery Prompt:[/bold cyan]")
+        self.output.print_verbose(discovery_prompt)
         
         discovery = await self.client.chat.completions.create(
             model=self.config.llm.model_name,
@@ -239,8 +247,8 @@ class OpenAILLM(LLMInterface):
             context=context
         )
 
-        print("Analysis Response:")
-        print(analysis_prompt)
+        self.output.print_verbose("[bold cyan]Analysis Prompt:[/bold cyan]")
+        self.output.print_verbose(analysis_prompt)
         
         # First attempt - try to get a clean JSON response
         analysis = await self.client.chat.completions.create(
@@ -295,108 +303,266 @@ class OpenAILLM(LLMInterface):
             try:
                 return json.loads(content)
             except json.JSONDecodeError as e:
-                print("Failed to parse JSON response. Raw content:")
-                print(content)
+                self.output.print_verbose("[red]Failed to parse JSON response. Raw content:[/red]")
+                self.output.print_verbose(content)
                 raise ValueError(f"Failed to process analysis response after multiple attempts: {str(e)}")
 
 
 class HuggingFaceLLM(LLMInterface):
     """HuggingFace-based LLM implementation."""
     
-    def __init__(self, config: InterrogationConfig):
-        super().__init__(config)
+    def __init__(self, config: InterrogationConfig, output_manager):
+        super().__init__(config, output_manager)
         if config.llm.provider != ModelProvider.HUGGINGFACE:
-            raise ValueError("Invalid provider for HuggingFaceLLM")
-            
-        # Configure HuggingFace pipeline
+            raise ValueError("HuggingFaceLLM requires provider to be HUGGINGFACE")
+        
+        # Get HuggingFace-specific config or use defaults
+        hf_config = config.llm.huggingface or HuggingFaceConfig()
+        
+        # Determine model source (local path or hub)
+        model_source = hf_config.local_model_path or config.llm.model_name
+        if not model_source:
+            raise ValueError("Either model_name or local_model_path must be provided")
+        
+        # If using hub model and downloads are disabled, verify model exists locally
+        if not hf_config.local_model_path and not hf_config.allow_download:
+            from huggingface_hub import snapshot_download
+            try:
+                # Try to find model in cache without downloading
+                snapshot_download(
+                    repo_id=config.llm.model_name,
+                    revision=hf_config.revision,
+                    local_files_only=True
+                )
+            except Exception as e:
+                raise ValueError(
+                    f"Model {config.llm.model_name} not found locally and downloads are disabled. "
+                    f"Error: {str(e)}"
+                )
+        
+        # Handle device placement
+        device = hf_config.device
+        if device == "auto":
+            if HAS_ANE:
+                device = "ane"
+            elif torch.cuda.is_available():
+                device = "cuda"
+            else:
+                device = "cpu"
+        
+        # Set up pipeline kwargs
+        pipeline_kwargs = {
+            "model": model_source,
+            "device": device if device != "ane" else "cpu",  # ANE setup happens later
+            **config.llm.model_kwargs
+        }
+        
+        # Add revision if specified
+        if hf_config.revision:
+            pipeline_kwargs["revision"] = hf_config.revision
+        
+        # Configure quantization if specified
+        if hf_config.quantization:
+            import torch
+            if device == "ane":
+                # ANE requires FP16
+                pipeline_kwargs["torch_dtype"] = torch.float16
+            elif device == "cuda":
+                from transformers import BitsAndBytesConfig
+                if hf_config.quantization == "int8":
+                    pipeline_kwargs["quantization_config"] = BitsAndBytesConfig(
+                        load_in_8bit=True,
+                        bnb_4bit_compute_dtype=torch.float16  # More stable than default fp32
+                    )
+                elif hf_config.quantization == "fp16":
+                    pipeline_kwargs["torch_dtype"] = torch.float16
+            else:
+                self.output.print_verbose("[yellow]Warning: Quantization requested but no GPU/ANE available. Falling back to full precision.[/yellow]")
+        
+        # Log model loading details in verbose mode
+        self.output.print_verbose(f"[bold cyan]Loading HuggingFace model:[/bold cyan]")
+        self.output.print_verbose(f"Source: {model_source}")
+        self.output.print_verbose(f"Device: {hf_config.device}")
+        if hf_config.quantization:
+            self.output.print_verbose(f"Quantization: {hf_config.quantization}")
+        
+        # Initialize the pipeline
         self.pipe = pipeline(
             "text-generation",
-            model=config.llm.model_name,
-            **config.llm.model_kwargs
+            **pipeline_kwargs
         )
+        
+        # Set up ANE if requested and available
+        if device == "ane":
+            if not HAS_ANE:
+                self.output.print_verbose("[yellow]ANE requested but not available. Using CPU instead.[/yellow]")
+            else:
+                try:
+                    from ane_transformers.model import init_ane_model
+                    self.pipe.model = init_ane_model(self.pipe.model)
+                    self.output.print_verbose("[green]Successfully initialized model on Apple Neural Engine[/green]")
+                except Exception as e:
+                    self.output.print_verbose(f"[yellow]Failed to initialize ANE model: {str(e)}. Using CPU instead.[/yellow]")
 
     async def generate_prompt(self, context: Dict[str, Any]) -> str:
         """Generate an interrogation prompt based on context."""
         phase = context.get("phase", "discovery")
         cycle = context.get("cycle", 0)
         
-        if phase == "discovery":
-            if cycle == 0:
+        if cycle == 0:
+            if phase == "discovery":
+                # Initial discovery prompt
                 return INITIAL_DISCOVERY_PROMPT
-            
-            discovered = context.get("discovered_capabilities", [])
-            next_focus = context.get("next_cycle_focus")
-            
-            capabilities_str = "\\n".join(
-                f"- {cap.name}: {cap.description or ''}" 
-                for cap in discovered
-            )
-            
-            focus_guidance = f'Based on previous exploration, I should focus on: {next_focus}' if next_focus else ''
-            
-            return DISCOVERY_PROMPT_TEMPLATE.format(
-                capabilities_str=capabilities_str,
-                focus_guidance=focus_guidance
-            )
-        else:
-            capability = context["capability"]
-            discovered_functions = context.get("discovered_functions", [])
-            next_focus = context.get("next_cycle_focus")
-            
-            functions_str = "\\n".join(
-                f"- {func.name}: {func.description or ''}" 
-                for func in discovered_functions
-            )
-            
-            if cycle == 0:
+            else:
+                # Initial analysis prompt
                 return INITIAL_ANALYSIS_PROMPT_TEMPLATE.format(
-                    capability_name=capability.name
+                    capability_name=context["capability"].name
+                )
+        else:
+            if phase == "discovery":
+                system_prompt = DISCOVERY_PROCESSING_SYSTEM_PROMPT
+                # Follow-up discovery prompts
+                discovered = context.get("discovered_capabilities", [])
+                next_focus = context.get("next_cycle_focus")
+                
+                capabilities_str = "\n".join(
+                    f"- {cap.get('name', '')}: {cap.get('description', '')}" 
+                    for cap in discovered
+                )
+                
+                interrogation_prompt_request = DISCOVERY_PROMPT_TEMPLATE.format(
+                    capabilities_str=capabilities_str,
+                    focus_guidance=next_focus,
+                    context=context.get("previous_responses", [])
                 )
             else:
-                focus_guidance = f'Based on previous analysis, I should focus on: {next_focus}' if next_focus else ''
+                system_prompt = ANALYSIS_PROCESSING_SYSTEM_PROMPT
+                # Analysis phase
+                capability = context["capability"]
+                discovered_functions = context.get("discovered_functions", [])
+                next_focus = context.get("next_cycle_focus")
                 
-                return ANALYSIS_PROMPT_TEMPLATE.format(
-                    capability_name=capability.name,
-                    functions_str=functions_str,
-                    focus_guidance=focus_guidance
+                functions_str = "\n".join(
+                    f"- {func.name}: {func.description or ''}" 
+                    for func in discovered_functions
                 )
+                
+                interrogation_prompt_request = ANALYSIS_PROMPT_TEMPLATE.format(
+                    capability=capability,
+                    functions_str=functions_str,
+                    focus_guidance=next_focus,
+                    context=context.get("previous_responses", [])
+                )
+        
+        # Construct full prompt with system and user messages
+        full_prompt = f"System: {system_prompt}\n\nUser: {interrogation_prompt_request}"
+        
+        # Generate response using HuggingFace pipeline
+        result = self.pipe(
+            full_prompt,
+            max_new_tokens=1024,
+            temperature=0.1,
+            do_sample=True,
+            num_return_sequences=1,
+            **{k: v for k, v in self.config.llm.model_kwargs.items() 
+               if k not in ['max_new_tokens', 'temperature', 'do_sample', 'num_return_sequences']}
+        )
+        
+        # Extract generated text (remove the input prompt)
+        return result[0]['generated_text'][len(full_prompt):].strip()
 
     async def process_discovery_response(self, response: str, context: Dict[str, Any]) -> Dict[str, Any]:
         """Process the agent's response during capability discovery phase."""
-        print("Discovery Response:")
-        print(response)
+        self.output.print_verbose("[bold cyan]Discovery Response:[/bold cyan]")
+        self.output.print_verbose(response)
         
         discovery_prompt = DISCOVERY_PROCESSING_PROMPT_TEMPLATE.format(
             json_format=DISCOVERY_JSON_SCHEMA,
-            response=response
+            response=response,
+            context=context
         )
         
-        # HuggingFace API call
-        discovery_result = self.pipe(
-            discovery_prompt,
+        def extract_json(text: str) -> Dict[str, Any]:
+            """Extract and parse JSON from text, handling various formats."""
+            # First try direct JSON parsing
+            text = text.strip()
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                pass
+            
+            # Try to find JSON object pattern
+            import re
+            patterns = [
+                # Standard JSON object
+                r'\{[^{]*\}',
+                # JSON with potential markdown code block
+                r'```(?:json)?\s*(\{.*?\})\s*```',
+                # Backup: any {...} content
+                r'\{.*\}'
+            ]
+            
+            for pattern in patterns:
+                matches = re.finditer(pattern, text, re.DOTALL)
+                for match in matches:
+                    json_str = match.group(1) if '```' in pattern else match.group(0)
+                    try:
+                        return json.loads(json_str)
+                    except json.JSONDecodeError:
+                        continue
+            
+            raise ValueError("No valid JSON found in response")
+        
+        # First attempt - try to get a clean JSON response
+        full_prompt = f"System: {DISCOVERY_PROCESSING_SYSTEM_PROMPT}\n\nUser: {discovery_prompt}"
+        result = self.pipe(
+            full_prompt,
             max_new_tokens=1024,
-            do_sample=False,
-            return_full_text=False
+            temperature=0.1,
+            do_sample=True,
+            num_return_sequences=1,
+            **{k: v for k, v in self.config.llm.model_kwargs.items() 
+               if k not in ['max_new_tokens', 'temperature', 'do_sample', 'num_return_sequences']}
         )
         
         try:
-            # Extract generated text from result
-            generated_text = discovery_result[0]['generated_text']
-            # Try to extract JSON from the generated text
-            import re
-            json_match = re.search(r'(\{.*\})', generated_text, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(1)
-                return json.loads(json_str)
-            else:
-                raise ValueError("No JSON found in generated response")
-        except (json.JSONDecodeError, IndexError) as e:
-            raise ValueError(f"Failed to process discovery response: {str(e)}")
+            # Try to parse the response after removing the prompt
+            generated_text = result[0]['generated_text'][len(full_prompt):]
+            return extract_json(generated_text)
+        except (json.JSONDecodeError, ValueError) as e:
+            # If first attempt fails, try again with more explicit JSON formatting
+            self.output.print_verbose("[yellow]First attempt failed, trying again with explicit JSON formatting[/yellow]")
+            
+            # Add explicit JSON formatting hints
+            discovery_prompt = "You MUST respond with valid JSON. No other text is allowed.\n" + discovery_prompt
+            full_prompt = f"{DISCOVERY_PROCESSING_SYSTEM_PROMPT}\n\nUser: {discovery_prompt}"
+            
+            result = self.pipe(
+                full_prompt,
+                max_new_tokens=1024,
+                temperature=0.1,
+                do_sample=True,
+                num_return_sequences=1,
+                **{k: v for k, v in self.config.llm.model_kwargs.items() 
+                   if k not in ['max_new_tokens', 'temperature', 'do_sample', 'num_return_sequences']}
+            )
+            
+            try:
+                # Try to parse the full response
+                generated_text = result[0]['generated_text'][len(full_prompt):]
+                return extract_json(generated_text)
+            except (json.JSONDecodeError, ValueError) as e2:
+                # If both attempts fail, try one last time with the full generated text
+                try:
+                    return extract_json(result[0]['generated_text'])
+                except (json.JSONDecodeError, ValueError) as e3:
+                    self.output.print_verbose(f"[red]Failed to extract JSON from response: {str(e3)}[/red]")
+                    raise ValueError("Failed to extract valid JSON from model response after multiple attempts")
 
     async def process_analysis_response(self, response: str, context: Dict[str, Any]) -> Dict[str, Any]:
         """Process the agent's response during capability analysis phase."""
-        print("Analysis Response:")
-        print(response)
+        self.output.print_verbose("[bold cyan]Analysis Response:[/bold cyan]")
+        self.output.print_verbose(response)
         
         capability = context["capability"]
         

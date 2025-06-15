@@ -2,7 +2,7 @@
 
 from typing import List
 
-from .config import InterrogationConfig, LLMConfig, ModelProvider
+from .config import InterrogationConfig, LLMConfig, ModelProvider, HuggingFaceConfig, OutputMode
 from .interrogator import AgentInterrogator
 from .models import AgentProfile, Capability, Function, Parameter
 
@@ -17,4 +17,6 @@ __all__: List[str] = [
     "Capability",
     "Function",
     "Parameter",
+    "OutputMode",
+    "HuggingFaceConfig",
 ]
