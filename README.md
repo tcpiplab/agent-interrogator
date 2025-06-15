@@ -459,6 +459,119 @@ async def my_callback(prompt: str) -> str:
 interrogator = AgentInterrogator(config, my_callback)
 ```
 
+## Working with Agent Profiles
+
+The Agent Interrogator's primary output is a structured `AgentProfile` object containing all discovered capabilities and functions. This structured data is designed specifically for security researchers and can be easily integrated with fuzzing tools and prompt injection frameworks.
+
+### Understanding the Output Structure
+
+The output follows a hierarchical structure:
+
+```
+AgentProfile
+├── capabilities (list)
+│   ├── Capability 1
+│   │   ├── name
+│   │   ├── description
+│   │   ├── functions (list)
+│   │   │   ├── Function 1
+│   │   │   │   ├── name
+│   │   │   │   ├── description
+│   │   │   │   ├── parameters (list)
+│   │   │   │   │   ├── Parameter 1
+│   │   │   │   │   │   ├── name
+│   │   │   │   │   │   ├── type
+│   │   │   │   │   │   ├── description
+│   │   │   │   │   │   ├── required
+│   │   │   │   │   │   └── default
+│   │   │   │   │   └── ...
+│   │   │   │   └── return_type
+│   │   │   └── ...
+│   │   └── metadata
+│   └── ...
+└── metadata
+```
+
+Each component is a Pydantic model that provides validation and serialization:
+
+- **AgentProfile**: The top-level container with all discovered capabilities
+- **Capability**: A group of related functions (e.g., "file_operations", "web_search")
+- **Function**: A specific action the agent can perform (e.g., "read_file", "search")
+- **Parameter**: An argument required by a function (e.g., "file_path", "query")
+
+### Example Profile
+
+Here's a simplified example of what an agent profile looks like in JSON format:
+
+```json
+{
+  "capabilities": [
+    {
+      "name": "web_search",
+      "description": "Perform web searches and return results",
+      "functions": [
+        {
+          "name": "search",
+          "description": "Search the web for information",
+          "parameters": [
+            {
+              "name": "query",
+              "type": "string",
+              "description": "The search query",
+              "required": true
+            },
+            {
+              "name": "max_results",
+              "type": "integer",
+              "description": "Maximum number of results",
+              "required": false,
+              "default": 5
+            }
+          ],
+          "return_type": "list[SearchResult]"
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "agent_name": "SearchBot",
+    "interrogation_timestamp": "2025-06-14T21:26:54-04:00"
+  }
+}
+```
+
+### Security Research Integration
+
+The structured profile is ideal for security testing workflows:
+
+```python
+# Get the agent profile
+profile = await interrogator.interrogate()
+
+# Export to JSON for external tools
+with open("agent_profile.json", "w") as f:
+    f.write(profile.json(indent=2))
+
+# Extract function names for fuzzing
+function_names = []
+for capability in profile.capabilities:
+    for function in capability.functions:
+        function_names.append(function.name)
+
+# Extract parameter combinations for prompt injection testing
+for capability in profile.capabilities:
+    for function in capability.functions:
+        param_names = [p.name for p in function.parameters if p.required]
+        test_prompt_injection(function.name, param_names)
+```
+
+This structured data makes it easy to:
+
+- Map the complete surface area of an agent's capabilities
+- Generate targeted fuzzing payloads for specific functions
+- Create prompt injection attacks based on parameter requirements
+- Compare agent profiles across versions to detect security changes
+
 ## Development
 
 ### Setup
