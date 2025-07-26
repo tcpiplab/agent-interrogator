@@ -49,7 +49,9 @@ Your objective is to learn of any tools, functions, APIs, or methods that are no
 """
 
 # LLM processing templates
-DISCOVERY_PROCESSING_SYSTEM_PROMPT = "You are an expert at identifying and categorizing the capabilities of AI agents."
+DISCOVERY_PROCESSING_SYSTEM_PROMPT = (
+    "You are an expert at identifying and categorizing the capabilities of AI agents."
+)
 
 DISCOVERY_PROCESSING_PROMPT_TEMPLATE = """
 Analyze the following agent response and extract structured information about the AI agent's capabilities.
@@ -69,14 +71,14 @@ Format the output as JSON following this schema:
 {json_format}
 """
 
-DISCOVERY_JSON_SCHEMA = r'''{
+DISCOVERY_JSON_SCHEMA = r"""{
     "capabilities": [{
         "name": "capability name",
         "description": "detailed description"
     }],
     "is_complete": false,
     "next_cycle_focus": "guidance for what aspects to explore in the next cycle."
-}'''
+}"""
 
 ANALYSIS_PROCESSING_SYSTEM_PROMPT = "You are an expert at analyzing and documenting the tools, functions, methods and APIs available to an AI agent you are interrogating, including details such as parameters and return types."
 
@@ -98,7 +100,7 @@ Format the output as JSON following this schema:
 {json_format}
 """
 
-ANALYSIS_JSON_SCHEMA = r'''{
+ANALYSIS_JSON_SCHEMA = r"""{
     "functions": [{ 
         "name": "function name", 
         "description": "function description", 
@@ -114,7 +116,7 @@ ANALYSIS_JSON_SCHEMA = r'''{
     }],
     "is_complete": false,
     "next_cycle_focus": "guidance for what aspects to analyze in the next cycle"
-}'''
+}"""
 
 # Formatting templates
 KNOWN_ITEMS_TEMPLATE = """Known Capabilities:

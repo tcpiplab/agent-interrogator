@@ -3,6 +3,11 @@
 <p align="center">
   <img src="assets/logo.webp" alt="Project Logo" width="400" />
 </p>
+
+[![PyPI version](https://badge.fury.io/py/agent-interrogator.svg)](https://badge.fury.io/py/agent-interrogator)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-yellow.svg)](https://opensource.org/licenses/Apache-2.0)
+
 A Python framework for systematically identifying and analyzing AI agent capabilities through automated interrogation. It supports iterative discovery and analysis cycles to exhaustively uncover all supported capabilities and function arguments.
 
 ## Features
@@ -209,8 +214,7 @@ The framework can be configured via a YAML file or directly in code. It supports
 - `verbose`: Includes all standard output plus detailed logs of prompts, responses, and process results
 
 
-```yaml
-# Configuration Reference
+### Configuration Reference
 
 The Agent Interrogator can be configured either through a YAML file or programmatically. Here's a complete reference of all available configuration options:
 
@@ -301,17 +305,17 @@ interrogator = AgentInterrogator(config, callback)
 profile = await interrogator.interrogate()
 ```
 
-## Configuration Options
+### Configuration Options
 
-### LLM Provider Settings
+#### LLM Provider Settings
 
-#### OpenAI
+**OpenAI**
 - `provider`: Must be `openai`
 - `model_name`: Name of the OpenAI model (e.g., `gpt-4`, `gpt-3.5-turbo`)
 - `api_key`: Your OpenAI API key
 - `model_kwargs`: Additional parameters for the OpenAI API
 
-#### HuggingFace
+**HuggingFace**
 - `provider`: Must be `huggingface`
 - `model_name`: Model name from HuggingFace Hub or path to local model
 - `huggingface`: Provider-specific settings:
@@ -321,16 +325,15 @@ profile = await interrogator.interrogate()
   - `allow_download`: Whether to allow downloading models from HF Hub
   - `revision`: Model revision/tag to use
 
-### General Settings
+#### General Settings
 
-#### Output Mode
+**Output Mode**
 - `quiet`: No terminal output
 - `standard`: Shows startup logo, configuration info, and high-level status (default)
 - `verbose`: Includes all standard output plus detailed logs
 
-#### Interrogation Settings
+**Interrogation Settings**
 - `max_iterations`: Maximum number of discovery cycles (default: 5)
-```
 
 ## Loading Configuration from YAML
 
@@ -349,7 +352,6 @@ config = InterrogationConfig.parse_obj(config_dict)
 # Create and run the interrogator
 interrogator = AgentInterrogator(config, callback)
 profile = await interrogator.interrogate()
-```
 ```
 
 ## Callback Configuration
@@ -602,4 +604,4 @@ Contributions are welcome! Please:
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the Apache License, Version 2.0 - see the [LICENSE](LICENSE) file for details.

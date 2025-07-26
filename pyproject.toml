@@ -5,16 +5,29 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agent-interrogator"
 version = "0.1.0"
-description = "An AI agent interrogation framework for identifying tool capabilities and attack surfaces"
+description = "An AI agent interrogation framework for identifying attack surface."
 readme = "README.md"
 requires-python = ">=3.9"
-license = {text = "MIT"}
-authors = [{name = "Michael"}]
+license = "Apache-2.0"
+authors = [{name = "Michael Samson"}]
+maintainers = [{name = "Michael Samson"}]
+keywords = ["ai", "agent", "security", "testing", "interrogation", "llm", "prompt-injection", "vulnerability-assessment"]
+urls = {Homepage = "https://github.com/qwordsmith/agent-interrogator", Issues = "https://github.com/qwordsmith/agent-interrogator/issues", Documentation = "https://github.com/qwordsmith/agent-interrogator#readme"}
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
 ]
 dependencies = [
     "pydantic>=2.0.0",
@@ -55,3 +68,8 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 check_untyped_defs = true
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+python_files = ["test_*.py"]

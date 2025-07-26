@@ -2,7 +2,13 @@
 
 from typing import List
 
-from .config import InterrogationConfig, LLMConfig, ModelProvider, HuggingFaceConfig, OutputMode
+from .config import (
+    HuggingFaceConfig,
+    InterrogationConfig,
+    LLMConfig,
+    ModelProvider,
+    OutputMode,
+)
 from .interrogator import AgentInterrogator
 from .models import AgentProfile, Capability, Function, Parameter
 
