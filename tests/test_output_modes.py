@@ -45,7 +45,6 @@ def mock_console(monkeypatch):
     mock = MockConsole()
     # Mock Console in all relevant modules
     monkeypatch.setattr("agent_interrogator.output.Console", lambda: mock)
-    monkeypatch.setattr("agent_interrogator.interrogator.Console", lambda: mock)
     return mock
 
 

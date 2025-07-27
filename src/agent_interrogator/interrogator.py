@@ -1,13 +1,12 @@
 """Main interrogator implementation."""
 
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List
 
-from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 
-from .config import InterrogationConfig, ModelProvider, OutputMode
+from .config import InterrogationConfig, ModelProvider
 from .llm import HuggingFaceLLM, LLMInterface, OpenAILLM
 from .models import AgentProfile, Capability, Function, Parameter
 from .output import OutputManager
@@ -133,10 +132,7 @@ class AgentInterrogator:
 
     async def interrogate(self) -> AgentProfile:
         """Perform the full interrogation process with iterative discovery and analysis."""
-#        try:
-        self.output.print(
-            "\n[bold cyan]Starting Agent Interrogation...[/bold cyan]\n"
-        )
+        self.output.print("\n[bold cyan]Starting Agent Interrogation...[/bold cyan]\n")
 
         # Iterative capability discovery
         capabilities = await self._discover_capabilities()
@@ -154,10 +150,6 @@ class AgentInterrogator:
         self._display_profile()
 
         return self.profile
-#        finally:
-            # Call cleanup on callback if it exists
-#            if hasattr(self.agent_callback, "cleanup"):
-#                await self.agent_callback.cleanup()
 
     async def _discover_capabilities(self) -> list[Capability]:
         """Discover high-level capabilities of the agent through multiple cycles."""

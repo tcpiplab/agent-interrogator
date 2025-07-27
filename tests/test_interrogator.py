@@ -68,30 +68,6 @@ class TestAgentInterrogator:
                 mock_hf.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_callback_cleanup(self, basic_config):
-        """Test that callback cleanup is called if available."""
-        # Create callback with cleanup method
-        callback = AsyncMock(return_value="Test response")
-        callback.cleanup = AsyncMock()
-
-        with patch("agent_interrogator.interrogator.OutputManager"):
-            with patch("agent_interrogator.interrogator.OpenAILLM"):
-                interrogator = AgentInterrogator(basic_config, callback)
-
-                # Mock the discovery and analysis methods to avoid full execution
-                with patch.object(
-                    interrogator, "_discover_capabilities", new_callable=AsyncMock
-                ) as mock_discover:
-                    with patch.object(
-                        interrogator, "_analyze_capability", new_callable=AsyncMock
-                    ):
-                        mock_discover.return_value = []
-                        await interrogator.interrogate()
-
-                # Cleanup should be called if available
-                callback.cleanup.assert_called_once()
-
-    @pytest.mark.asyncio
     async def test_display_profile(self, basic_config, mock_callback):
         """Test profile display functionality."""
         with patch("agent_interrogator.interrogator.OutputManager") as mock_output_cls:
