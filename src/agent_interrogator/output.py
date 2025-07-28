@@ -4,11 +4,11 @@ import json
 from typing import Any
 
 from rich.console import Console
+from rich.json import JSON
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
-from rich.json import JSON
 
 from .config import OutputMode
 
@@ -71,7 +71,7 @@ class OutputManager:
             except (TypeError, ValueError):
                 # Fallback to text with wrapping if JSON serialization fails
                 content = Text(str(result), style="yellow", overflow="fold")  # type: ignore
-            
+
             self.console.print(
                 Panel(
                     content,
