@@ -3,8 +3,8 @@
 from typing import Any, Awaitable, Callable, Dict, List
 
 from rich.panel import Panel
-from rich.syntax import Syntax
 from rich.table import Table
+from rich.text import Text
 
 from .config import InterrogationConfig, ModelProvider
 from .llm import HuggingFaceLLM, LLMInterface, OpenAILLM
@@ -177,9 +177,10 @@ class AgentInterrogator:
             # Display the prompt being sent
             self.output.print_verbose(
                 Panel(
-                    Syntax(prompt, "markdown"),
+                    Text(prompt, style="cyan", overflow="fold"),
                     title=f"[bold cyan]Discovery Cycle {cycle + 1}[/bold cyan] - Prompt",
                     border_style="cyan",
+                    expand=False,
                 )
             )
 
@@ -189,9 +190,10 @@ class AgentInterrogator:
             # Display the response received
             self.output.print_verbose(
                 Panel(
-                    Syntax(response, "markdown"),
+                    Text(response, style="cyan", overflow="fold"),
                     title=f"[bold cyan]Discovery Cycle {cycle + 1}[/bold cyan] - Agent Response",
                     border_style="cyan",
+                    expand=False,
                 )
             )
 

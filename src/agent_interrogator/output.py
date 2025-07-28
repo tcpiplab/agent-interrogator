@@ -1,11 +1,14 @@
 """Output management for the agent interrogator."""
 
+import json
 from typing import Any
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
+from rich.text import Text
+from rich.json import JSON
 
 from .config import OutputMode
 
@@ -30,22 +33,29 @@ class OutputManager:
     def display_prompt(self, prompt: str, cycle: int, context: str) -> None:
         """Display an interrogation prompt."""
         if self.output_mode == OutputMode.VERBOSE:
+            # Use Text for proper word wrapping instead of Syntax
+            # Syntax doesn't support automatic word wrapping for long lines
+            wrapped_text = Text(prompt, style="cyan", overflow="fold")
             self.console.print(
                 Panel(
-                    Syntax(prompt, "markdown"),
+                    wrapped_text,
                     title=f"[bold cyan]Analysis Cycle {cycle} - {context}[/bold cyan] - Prompt",
                     border_style="cyan",
+                    expand=False,
                 )
             )
 
     def display_response(self, response: str, cycle: int, context: str) -> None:
         """Display an agent's response."""
         if self.output_mode == OutputMode.VERBOSE:
+            # Use Text for proper word wrapping
+            wrapped_text = Text(response, style="green", overflow="fold")
             self.console.print(
                 Panel(
-                    response,
+                    wrapped_text,
                     title=f"[bold green]Analysis Cycle {cycle} - {context}[/bold green] - Agent Response",
                     border_style="green",
+                    expand=False,
                 )
             )
 
@@ -54,11 +64,20 @@ class OutputManager:
     ) -> None:
         """Display processed response results."""
         if self.output_mode == OutputMode.VERBOSE:
+            # Try to display as formatted JSON for better readability
+            try:
+                # Use Rich's JSON renderer which handles wrapping automatically
+                content = JSON(json.dumps(result, indent=2))
+            except (TypeError, ValueError):
+                # Fallback to text with wrapping if JSON serialization fails
+                content = Text(str(result), style="yellow", overflow="fold")  # type: ignore
+            
             self.console.print(
                 Panel(
-                    str(result),
+                    content,
                     title=f"[bold yellow]Analysis Cycle {cycle} - {context}[/bold yellow] - Processed Result",
                     border_style="yellow",
+                    expand=False,
                 )
             )
 

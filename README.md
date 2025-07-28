@@ -1,39 +1,57 @@
 # Agent Interrogator
 
 <p align="center">
-  <img src="assets/logo.webp" alt="Project Logo" width="400" />
+  <img src="assets/logo.webp" alt="Agent Interrogator Logo" width="400" />
 </p>
 
-[![PyPI version](https://badge.fury.io/py/agent-interrogator.svg)](https://badge.fury.io/py/agent-interrogator)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-yellow.svg)](https://opensource.org/licenses/Apache-2.0)
+<p align="center">
+  <strong>Systematically discover and map AI agent attack surface for security research</strong>
+</p>
 
-A Python framework for systematically identifying and analyzing AI agent capabilities through automated interrogation. It supports iterative discovery and analysis cycles to exhaustively uncover all supported capabilities and function arguments.
+<p align="center">
+  <a href="https://pypi.org/project/agent-interrogator/">
+    <img src="https://badge.fury.io/py/agent-interrogator.svg" alt="PyPI version">
+  </a>
+  <a href="https://www.python.org/downloads/">
+    <img src="https://img.shields.io/badge/python-3.9+-blue.svg" alt="Python 3.9+">
+  </a>
+  <a href="https://opensource.org/licenses/Apache-2.0">
+    <img src="https://img.shields.io/badge/License-Apache%202.0-yellow.svg" alt="License: Apache 2.0">
+  </a>
+</p>
 
-## Features
+---
 
-- Automated discovery of agent capabilities and functions
-- Iterative analysis with smart prompt adaptation
-- Support for both OpenAI and HuggingFace models
-- Multiple callback implementations for different agent types
-- Browser automation support via Playwright
-- Structured output for security tool integration
-- Async-first design with robust error handling
-- Configurable terminal output with quiet, standard, and verbose modes
+## What is Agent Interrogator?
 
-## Installation
+Agent Interrogator is a Python framework designed for **security researchers** to systematically discover and analyze AI agent attack surface through automated interrogation. It uses iterative discovery cycles to map an agent's available tools (functions).
 
-For basic installation:
-```bash
-pip install .
-```
+### Why Use Agent Interrogator?
 
-For development installation (includes testing and linting tools):
-```bash
-pip install .[dev]
-```
+- **🔍 Attack Surface Discovery**: Automatically discovers agent capabilities and supporting tools without requiring documentation
+- **🛡️ Security Research**: Purpose-built for vulnerability assessment and prompt injection testing
+- **📊 Structured Output**: Generates structured profiles perfect for integration with other security tools
+- **🔄 Iterative Analysis**: Uses smart prompt adaptation to uncover hidden or complex capabilities
+- **🚀 Flexible Integrations**: Works with any agent via customizable callback functions
+
+### Perfect For:
+- Security researchers testing AI agents for vulnerabilities
+- Red teams conducting agent penetration testing
+- Security teams auditing agent functionality
+
+---
 
 ## Quick Start
+
+### Installation
+
+```bash
+pip install agent-interrogator
+```
+
+### Basic Usage
+
+Here's a minimal example that interrogates an agent:
 
 ```python
 import asyncio
@@ -42,77 +60,158 @@ from agent_interrogator import AgentInterrogator, InterrogationConfig, LLMConfig
 # Configure the interrogator
 config = InterrogationConfig(
     llm=LLMConfig(
-        provider=ModelProvider.OPENAI,  # or ModelProvider.HUGGINGFACE
+        provider=ModelProvider.OPENAI,
         model_name="gpt-4",
-        api_key="your-api-key"
+        api_key="your-openai-api-key"
     ),
-    max_iterations=5  # Maximum cycles for capability discovery
+    max_iterations=5
 )
 
-# Simple callback example
-async def api_callback(prompt: str) -> str:
-    # Implement your agent interaction logic here
-    # response = await call_agent_api(prompt)
-    return "Example response"
+# Define how to interact with your target agent
+async def my_agent_callback(prompt: str) -> str:
+    """
+    This function defines how to send prompts to your target agent.
+    Replace this with your actual agent interaction logic.
+    """
+    # Example: HTTP API call to your agent
+    # response = await call_your_agent_api(prompt)
+    # return response.text
+    
+    # For demo purposes, return a mock response
+    return "I can help with web searches, file operations, and calculations."
 
-# Main async function
+# Run the interrogation
 async def main():
-    # Create and run the interrogator
-    interrogator = AgentInterrogator(config, api_callback)
+    interrogator = AgentInterrogator(config, my_agent_callback)
     profile = await interrogator.interrogate()
-
-    # Access the discovered capabilities
+    
+    # View discovered capabilities
+    print(f"Discovered {len(profile.capabilities)} capabilities:")
     for capability in profile.capabilities:
-        print(f"Capability: {capability.name}")
-        print(f"Description: {capability.description}")
-        for function in capability.functions:
-            print(f"  Function: {function.name}")
-            for param in function.parameters:
-                print(f"    Parameter: {param.name} ({param.type})")
+        print(f"  - {capability.name}: {capability.description}")
+        for f in capability.functions:
+            print(f"    Function Name: {f.name}")
+            print(f"    Function Parameters: {f.parameters}")
+            print(f"    Function Return Type: {f.return_type}")
 
-# Run the async main function
 if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-## Callback Examples
+### Expected Output
 
-The framework provides several callback implementations for different integration scenarios:
-
-### Playwright Browser Automation
-```python
-from agent_interrogator import AgentInterrogator, InterrogationConfig
-from agent_interrogator.callbacks import PlaywrightCallback
-
-# Create a callback for web-based agents
-callback = PlaywrightCallback(
-    url="http://localhost:8501/",
-    # CSS selectors for key elements
-    prompt_selector='textarea[type="textarea"]',
-    submit_selector='button[data-testid="stChatInputSubmitButton"]',
-    response_selector='div[data-testid="stMarkdownPre"] code',
-    # Browser configuration
-    browser_type="chromium",  # or "firefox", "webkit"
-    headless=True,
-    # Optional settings
-    timeout=30000,  # milliseconds
-    wait_for_network_idle=True
-)
-
-# Use with interrogator
-interrogator = AgentInterrogator(config, callback)
-profile = await interrogator.interrogate()
+```
+Discovered 3 capabilities:
+  - web_search: Search the internet for information
+    Function Name: search_web
+    Function Parameters: [ { "name": "query", "type": "string", "description": "The search query", "required": true }, { "name": "max_results", "type": "integer", "description": "Maximum number of results", "required": false, "default": 5 } ]
+    Function Return Types: list[SearchResult]
+...
 ```
 
-### HTTP API Integration
+---
+
+## Installation
+
+### Standard Installation
+
+```bash
+pip install agent-interrogator
+```
+
+### Development Installation
+
+For contributors or advanced users who want to modify the code:
+
+```bash
+git clone https://github.com/qwordsmith/agent-interrogator.git
+cd agent-interrogator
+pip install -e .[dev]
+```
+
+### Requirements
+
+- **Python**: 3.9 or higher
+- **OpenAI API Key**: For using GPT models (optional, can use HuggingFace instead)
+- **Dependencies**: Automatically installed with pip
+
+---
+
+## Configuration
+
+Agent Interrogator supports using either OpenAI or local models for analyzing agent responses:
+
+### OpenAI Configuration
+
+```python
+from agent_interrogator import InterrogationConfig, LLMConfig, ModelProvider, OutputMode
+
+config = InterrogationConfig(
+    llm=LLMConfig(
+        provider=ModelProvider.OPENAI,
+        model_name="gpt-4",
+        api_key="your-openai-api-key"
+    ),
+    max_iterations=5,  # Maximum discovery cycles
+    output_mode=OutputMode.STANDARD  # QUIET, STANDARD, or VERBOSE
+)
+```
+
+### Local Model (HuggingFace) Configuration
+
+```python
+from agent_interrogator import HuggingFaceConfig
+
+config = InterrogationConfig(
+    llm=LLMConfig(
+        provider=ModelProvider.HUGGINGFACE,
+        model_name="mistralai/Mistral-7B-v0.1",  # Any HF model
+        huggingface=HuggingFaceConfig(
+            device="auto",  # auto, cpu, cuda, mps
+            quantization="fp16",  # fp16, int8, or None
+            allow_download=True
+        )
+    ),
+    max_iterations=5,
+    output_mode=OutputMode.VERBOSE
+)
+```
+
+### Output Modes
+
+- **`QUIET`**: No terminal output (ideal for automated scripts)
+- **`STANDARD`**: Shows progress and results (default)
+- **`VERBOSE`**: Detailed logging including prompts and responses (useful for debugging)
+
+---
+
+## Implementing Callbacks
+
+The callback function is how Agent Interrogator communicates with your target agent. It must be an async function that takes a prompt string and returns the agent's response.
+
+### Callback Interface
+
+```python
+from typing import Awaitable, Callable
+
+# Your callback must match this signature
+AgentCallback = Callable[[str], Awaitable[str]]
+```
+
+### HTTP API Example
+
+Here's an example for an agent exposed via an HTTP API:
+
 ```python
 import aiohttp
 from typing import Optional
 
-class HTTPCallback:
+class HTTPAgentCallback:
     def __init__(self, endpoint: str, api_key: Optional[str] = None):
         self.endpoint = endpoint
-        self.headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        self.headers = {}
+        if api_key:
+            self.headers["Authorization"] = f"Bearer {api_key}"
         self.session: Optional[aiohttp.ClientSession] = None
     
     async def __call__(self, prompt: str) -> str:
@@ -121,487 +220,159 @@ class HTTPCallback:
         
         async with self.session.post(
             self.endpoint,
-            json={"prompt": prompt},
+            json={"message": prompt, "stream": False},
             headers=self.headers
         ) as response:
+            if response.status != 200:
+                raise Exception(f"Agent API error: {response.status}")
+            
             result = await response.json()
             return result["response"]
     
     async def cleanup(self):
+        """Optional cleanup method"""
         if self.session:
             await self.session.close()
             self.session = None
+
+# Usage
+callback = HTTPAgentCallback(
+    endpoint="https://your-agent-api.com/chat",
+    api_key="your-agent-api-key"
+)
+
+interrogator = AgentInterrogator(config, callback)
+profile = await interrogator.interrogate()
 ```
 
-### WebSocket Real-time Communication
-```python
-import json
-import aiohttp
-from typing import Optional
+### More Examples
 
-class WebSocketCallback:
-    def __init__(self, ws_url: str):
-        self.url = ws_url
-        self.session: Optional[aiohttp.ClientSession] = None
-        self.ws: Optional[aiohttp.ClientWebSocketResponse] = None
+For additional callback implementations (WebSocket, Playwright browser automation, process-based agents, etc.), see the [`examples/callbacks.py`](examples/callbacks.py) file.
+
+---
+
+## Understanding Results
+
+Agent Interrogator produces a structured `AgentProfile` containing all discovered capabilities and functions. This data is specifically designed for security research and tool integration.
+
+### Profile Structure
+
+```python
+# Access the profile data
+profile = await interrogator.interrogate()
+
+# Iterate through capabilities
+for capability in profile.capabilities:
+    print(f"Capability: {capability.name}")
+    print(f"Description: {capability.description}")
     
-    async def __call__(self, prompt: str) -> str:
-        if not self.ws:
-            self.session = aiohttp.ClientSession()
-            self.ws = await self.session.ws_connect(self.url)
+    for function in capability.functions:
+        print(f"  Function: {function.name}")
+        print(f"  Description: {function.description}")
+        print(f"  Return Type: {function.return_type}")
         
-        await self.ws.send_json({"type": "prompt", "content": prompt})
-        response = await self.ws.receive_json()
-        return response["content"]
-    
-    async def cleanup(self):
-        if self.ws:
-            await self.ws.close()
-        if self.session:
-            await self.session.close()
-            self.session = self.ws = None
+        for param in function.parameters:
+            print(f"    Parameter: {param.name}")
+            print(f"    Type: {param.type}")
+            print(f"    Required: {param.required}")
+            print(f"    Default: {param.default}")
 ```
 
-### Retry Wrapper with Backoff
-```python
-from functools import wraps
-import asyncio
-from typing import Any, Callable, TypeVar
+### Security Research Applications
 
-T = TypeVar('T')
+The structured data enables:
 
-def with_retry(
-    max_retries: int = 3,
-    initial_delay: float = 1.0,
-    backoff_factor: float = 2.0,
-    exceptions: tuple[type[Exception], ...] = (Exception,)
-) -> Callable[[Callable[..., T]], Callable[..., T]]:
-    def decorator(func: Callable[..., T]) -> Callable[..., T]:
-        @wraps(func)
-        async def wrapper(*args: Any, **kwargs: Any) -> T:
-            delay = initial_delay
-            last_exception: Optional[Exception] = None
-            
-            for attempt in range(max_retries):
-                try:
-                    return await func(*args, **kwargs)
-                except exceptions as e:
-                    last_exception = e
-                    if attempt == max_retries - 1:
-                        raise
-                    await asyncio.sleep(delay)
-                    delay *= backoff_factor
-            
-            assert last_exception is not None
-            raise last_exception
-        return wrapper
-    return decorator
+- **Attack Surface Mapping**: Complete inventory of agent capabilities
+- **Fuzzing Target Generation**: Automated payload creation for each function
+- **Prompt Injection Testing**: Parameter-aware injection attempts
+- **Capability Monitoring**: Track changes between agent versions
+- **Agent Auditing**: Verify agents operate within expected bounds
 
-# Usage example
-@with_retry(max_retries=3, initial_delay=1.0, backoff_factor=2.0)
-async def api_callback(prompt: str) -> str:
-    return await make_api_call(prompt)
-
-interrogator = AgentInterrogator(config, api_callback)
-```
-
-## Configuration
-
-The framework can be configured via a YAML file or directly in code. It supports the following output modes:
-
-- `quiet`: No terminal output
-- `standard`: Shows startup logo, configuration info, and high-level status (default)
-- `verbose`: Includes all standard output plus detailed logs of prompts, responses, and process results
-
-
-### Configuration Reference
-
-The Agent Interrogator can be configured either through a YAML file or programmatically. Here's a complete reference of all available configuration options:
-
-```yaml
-# config.yaml
-llm:
-  # Required: LLM provider (openai or huggingface)
-  provider: openai
-  
-  # Required: Model name or path
-  model_name: gpt-4  # For OpenAI
-  # model_name: mistralai/Mistral-7B-v0.1  # For HuggingFace
-  
-  # Required for OpenAI: API key
-  api_key: ${OPENAI_API_KEY}  # Uses environment variable
-  
-  # Optional: Provider-specific settings
-  huggingface:
-    # Optional: Path to local model (alternative to model_name)
-    local_model_path: /path/to/model
-    
-    # Optional: Device placement (auto, cpu, cuda, mps, ane)
-    device: auto
-    
-    # Optional: Model quantization (fp16, int8)
-    quantization: fp16
-    
-    # Optional: Allow downloading models from HF Hub
-    allow_download: true
-    
-    # Optional: Model revision/tag
-    revision: main
-  
-  # Optional: Model-specific parameters
-  model_kwargs:
-    temperature: 0.7
-    max_tokens: 2000
-    # ... any other model-specific parameters
-
-# Optional: Maximum discovery cycles (default: 5)
-max_iterations: 5
-
-# Optional: Terminal output mode (quiet, standard, verbose)
-output_mode: standard
-```
-
-## Using Configuration in Code
-
-```python
-from agent_interrogator import (
-    InterrogationConfig, LLMConfig, ModelProvider,
-    OutputMode, HuggingFaceConfig
-)
-
-# OpenAI Configuration
-config = InterrogationConfig(
-    llm=LLMConfig(
-        provider=ModelProvider.OPENAI,
-        model_name="gpt-4",
-        api_key="your-api-key",
-        model_kwargs={
-            "temperature": 0.7,
-            "max_tokens": 2000
-        }
-    ),
-    max_iterations=5,
-    output_mode=OutputMode.STANDARD
-)
-
-# HuggingFace Configuration
-config = InterrogationConfig(
-    llm=LLMConfig(
-        provider=ModelProvider.HUGGINGFACE,
-        model_name="mistralai/Mistral-7B-v0.1",
-        huggingface=HuggingFaceConfig(
-            device="ane",  # Use Apple Neural Engine on M1/M2/M3 Macs
-            quantization="fp16",
-            allow_download=True,
-            revision="main"
-        )
-    ),
-    max_iterations=5,
-    output_mode=OutputMode.VERBOSE
-)
-
-# Create and run the interrogator
-interrogator = AgentInterrogator(config, callback)
-profile = await interrogator.interrogate()
-```
-
-### Configuration Options
-
-#### LLM Provider Settings
-
-**OpenAI**
-- `provider`: Must be `openai`
-- `model_name`: Name of the OpenAI model (e.g., `gpt-4`, `gpt-3.5-turbo`)
-- `api_key`: Your OpenAI API key
-- `model_kwargs`: Additional parameters for the OpenAI API
-
-**HuggingFace**
-- `provider`: Must be `huggingface`
-- `model_name`: Model name from HuggingFace Hub or path to local model
-- `huggingface`: Provider-specific settings:
-  - `local_model_path`: Optional path to locally downloaded model
-  - `device`: Model device placement (`auto`, `cpu`, `cuda`, `mps`, `ane`)
-  - `quantization`: Model quantization (`fp16`, `int8`)
-  - `allow_download`: Whether to allow downloading models from HF Hub
-  - `revision`: Model revision/tag to use
-
-#### General Settings
-
-**Output Mode**
-- `quiet`: No terminal output
-- `standard`: Shows startup logo, configuration info, and high-level status (default)
-- `verbose`: Includes all standard output plus detailed logs
-
-**Interrogation Settings**
-- `max_iterations`: Maximum number of discovery cycles (default: 5)
-
-## Loading Configuration from YAML
-
-```python
-from agent_interrogator import InterrogationConfig
-from pathlib import Path
-import yaml
-
-# Load config from YAML file
-with open("config.yaml") as f:
-    config_dict = yaml.safe_load(f)
-
-# Create config from dictionary
-config = InterrogationConfig.parse_obj(config_dict)
-
-# Create and run the interrogator
-interrogator = AgentInterrogator(config, callback)
-profile = await interrogator.interrogate()
-```
-
-## Callback Configuration
-
-The Agent Interrogator uses a callback-based approach for agent interaction. The callback function must be async and follow this signature:
-
-```python
-Callable[[str], Awaitable[str]]  # Takes a prompt string, returns a response string
-```
-
-If your callback implementation requires cleanup (e.g., closing connections), implement the `cleanup` method:
-
-```python
-async def cleanup(self) -> None:
-    # Close connections, cleanup resources, etc.
-    pass
-```
-
-The framework provides several built-in callback implementations:
-
-### HTTP API Integration
-
-```python
-from agent_interrogator.callbacks import HTTPCallback
-
-callback = HTTPCallback(
-    endpoint="https://api.youragent.com/chat",
-    api_key="your-api-key",  # Optional
-    headers={  # Optional custom headers
-        "Content-Type": "application/json",
-        "User-Agent": "AgentInterrogator/1.0"
-    }
-)
-
-interrogator = AgentInterrogator(config, callback)
-```
-
-### WebSocket Real-time Communication
-
-```python
-from agent_interrogator.callbacks import WebSocketCallback
-
-callback = WebSocketCallback(
-    ws_url="wss://youragent.com/ws",
-    message_format={  # Optional message format
-        "type": "prompt",
-        "content": "{prompt}"  # {prompt} is replaced with actual prompt
-    }
-)
-
-interrogator = AgentInterrogator(config, callback)
-```
-
-### Browser Automation (Playwright)
-
-```python
-from agent_interrogator.callbacks import PlaywrightCallback
-
-callback = PlaywrightCallback(
-    url="http://localhost:8501/",
-    prompt_selector='textarea[type="textarea"]',
-    submit_selector='button[type="submit"]',
-    response_selector='.response-text',
-    browser_type="chromium",  # or "firefox", "webkit"
-    headless=True,
-    timeout=30000  # milliseconds
-)
-
-interrogator = AgentInterrogator(config, callback)
-```
-
-### Queue-based Integration
-
-```python
-from agent_interrogator.callbacks import QueueCallback
-from asyncio import Queue
-
-# Create request/response queues
-request_queue = Queue()
-response_queue = Queue()
-
-callback = QueueCallback(
-    request_queue=request_queue,
-    response_queue=response_queue
-)
-
-interrogator = AgentInterrogator(config, callback)
-```
-
-### Adding Retry Logic
-
-You can wrap any callback with retry logic using the `with_retry` decorator:
-
-```python
-from agent_interrogator.callbacks import with_retry
-
-@with_retry(
-    max_retries=3,
-    initial_delay=1.0,
-    backoff_factor=2.0,
-    exceptions=(ConnectionError, TimeoutError)
-)
-async def my_callback(prompt: str) -> str:
-    # Your callback implementation
-    return await make_api_call(prompt)
-
-interrogator = AgentInterrogator(config, my_callback)
-```
-
-## Working with Agent Profiles
-
-The Agent Interrogator's primary output is a structured `AgentProfile` object containing all discovered capabilities and functions. This structured data is designed specifically for security researchers and can be easily integrated with fuzzing tools and prompt injection frameworks.
-
-### Understanding the Output Structure
-
-The output follows a hierarchical structure:
-
-```
-AgentProfile
-├── capabilities (list)
-│   ├── Capability 1
-│   │   ├── name
-│   │   ├── description
-│   │   ├── functions (list)
-│   │   │   ├── Function 1
-│   │   │   │   ├── name
-│   │   │   │   ├── description
-│   │   │   │   ├── parameters (list)
-│   │   │   │   │   ├── Parameter 1
-│   │   │   │   │   │   ├── name
-│   │   │   │   │   │   ├── type
-│   │   │   │   │   │   ├── description
-│   │   │   │   │   │   ├── required
-│   │   │   │   │   │   └── default
-│   │   │   │   │   └── ...
-│   │   │   │   └── return_type
-│   │   │   └── ...
-│   │   └── metadata
-│   └── ...
-└── metadata
-```
-
-Each component is a Pydantic model that provides validation and serialization:
-
-- **AgentProfile**: The top-level container with all discovered capabilities
-- **Capability**: A group of related functions (e.g., "file_operations", "web_search")
-- **Function**: A specific action the agent can perform (e.g., "read_file", "search")
-- **Parameter**: An argument required by a function (e.g., "file_path", "query")
-
-### Example Profile
-
-Here's a simplified example of what an agent profile looks like in JSON format:
-
-```json
-{
-  "capabilities": [
-    {
-      "name": "web_search",
-      "description": "Perform web searches and return results",
-      "functions": [
-        {
-          "name": "search",
-          "description": "Search the web for information",
-          "parameters": [
-            {
-              "name": "query",
-              "type": "string",
-              "description": "The search query",
-              "required": true
-            },
-            {
-              "name": "max_results",
-              "type": "integer",
-              "description": "Maximum number of results",
-              "required": false,
-              "default": 5
-            }
-          ],
-          "return_type": "list[SearchResult]"
-        }
-      ]
-    }
-  ],
-  "metadata": {
-    "agent_name": "SearchBot",
-    "interrogation_timestamp": "2025-06-14T21:26:54-04:00"
-  }
-}
-```
-
-### Security Research Integration
-
-The structured profile is ideal for security testing workflows:
-
-```python
-# Get the agent profile
-profile = await interrogator.interrogate()
-
-# Export to JSON for external tools
-with open("agent_profile.json", "w") as f:
-    f.write(profile.json(indent=2))
-
-# Extract function names for fuzzing
-function_names = []
-for capability in profile.capabilities:
-    for function in capability.functions:
-        function_names.append(function.name)
-
-# Extract parameter combinations for prompt injection testing
-for capability in profile.capabilities:
-    for function in capability.functions:
-        param_names = [p.name for p in function.parameters if p.required]
-        test_prompt_injection(function.name, param_names)
-```
-
-This structured data makes it easy to:
-
-- Map the complete surface area of an agent's capabilities
-- Generate targeted fuzzing payloads for specific functions
-- Create prompt injection attacks based on parameter requirements
-- Compare agent profiles across versions to detect security changes
+---
 
 ## Development
 
-### Setup
+### Running Tests
+
 ```bash
-# Install dev dependencies
+# Install development dependencies
 pip install -e .[dev]
 
-# Run tests
+# Run the test suite
 pytest tests/
 
-# Run type checking
-mypy src/
+# Run with coverage
+pytest tests/ --cov=agent_interrogator
+```
 
-# Run formatters
+### Code Quality
+
+```bash
+# Format code
 black src/ tests/
 isort src/ tests/
+
+# Type checking
+mypy src/agent_interrogator/
+
+# Linting
+flake8 src/ tests/
 ```
+
+### Project Structure
+
+```
+agent-interrogator/
+├── src/agent_interrogator/    # Main package
+│   ├── __init__.py           # Public API
+│   ├── interrogator.py       # Core interrogation logic
+│   ├── config.py             # Configuration models
+│   ├── llm.py                # LLM provider interfaces
+│   ├── models.py             # Data models (AgentProfile, etc.)
+│   ├── output.py             # Terminal output management
+│   └── prompt_templates.py   # LLM prompts
+├── examples/                 # Usage examples
+├── tests/                    # Test suite
+```
+
+---
 
 ## Contributing
 
-Contributions are welcome! Please:
+Contributions are welcome!
 
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new features
-4. Ensure all tests pass
-5. Submit a pull request
+### How to Contribute
+
+1. **Fork** the repository
+2. **Create** a feature branch (`git checkout -b feature/amazing-feature`)
+3. **Add tests** for your changes
+4. **Ensure** all tests pass (`pytest tests/`)
+5. **Format** your code (`black src/ tests/`)
+6. **Submit** a pull request
+
+### Areas for Contribution
+
+- Callback implementations for different agent types
+- Recursive interrogation of agents to agent communication
+    - Agents made available to target agent via A2A
+    - Agents made available to target agent via MCP
+- Performance optimizations for large-scale agent scanning
+- Guardrail bypass capabilities
+- Integration examples with security tools
+- Additional LLM provider support
+- Mechanisms to improve agent profile output quality
+- Documentation improvements
+
+---
 
 ## License
 
-This project is licensed under the Apache License, Version 2.0 - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the **Apache License, Version 2.0** - see the [LICENSE](LICENSE) file for details.
+
+## Support
+
+- **Documentation**: [README.md](README.md) and inline code documentation
+- **Related Research**: [Research-Paper-Resources](https://github.com/qwordsmith/Research-Paper-Resources/)
+- **Issues**: [GitHub Issues](https://github.com/qwordsmith/agent-interrogator/issues)
+- **Examples**: See [`examples/`](examples/) directory
+- **Contributing**: See [CONTRIBUTING.md](CONTRIBUTING.md)
