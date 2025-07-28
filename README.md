@@ -1,7 +1,7 @@
 # Agent Interrogator
 
 <p align="center">
-  <img src="assets/logo.webp" alt="Agent Interrogator Logo" width="400" />
+  <img src="https://raw.githubusercontent.com/qwordsmith/agent-interrogator/refs/heads/main/assets/logo.webp" alt="Agent Interrogator Logo" width="400" />
 </p>
 
 <p align="center">
