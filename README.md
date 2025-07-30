@@ -24,7 +24,7 @@
 
 ## What is Agent Interrogator?
 
-Agent Interrogator is a Python framework designed for **security researchers** to systematically discover and analyze AI agent attack surface through automated interrogation. It uses iterative discovery cycles to map an agent's available tools (functions).
+Agent Interrogator is a Python library designed for **security researchers** to systematically discover and analyze AI agent attack surface through automated interrogation. It uses iterative discovery cycles to map an agent's available tools (functions).
 
 ### Why Use Agent Interrogator?
 
