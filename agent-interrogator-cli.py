@@ -150,6 +150,17 @@ class MCPCallback:
                     "[yellow]SSL verification disabled for proxy interception[/yellow]"
                 )
 
+                # Get proxy configuration from environment
+                http_proxy = os.getenv("http_proxy") or os.getenv("HTTP_PROXY")
+                https_proxy = os.getenv("https_proxy") or os.getenv("HTTPS_PROXY")
+
+                # Build proxy dict for httpx
+                proxies = {}
+                if http_proxy:
+                    proxies["http://"] = http_proxy
+                if https_proxy:
+                    proxies["https://"] = https_proxy
+
                 def insecure_client_factory(
                     headers: Optional[Dict[str, str]] = None,
                     timeout: Optional[httpx.Timeout] = None,
@@ -157,8 +168,16 @@ class MCPCallback:
                 ) -> httpx.AsyncClient:
                     if timeout is None:
                         timeout = httpx.Timeout(self.timeout)
+                    # Force HTTP/1.1 for proxy compatibility
+                    # Some proxies don't handle HTTP/2 properly, so we explicitly disable it
                     return httpx.AsyncClient(
-                        verify=False, headers=headers, timeout=timeout, auth=auth
+                        verify=False,
+                        headers=headers,
+                        timeout=timeout,
+                        auth=auth,
+                        http1=True,   # Explicitly enable HTTP/1.1
+                        http2=False,  # Explicitly disable HTTP/2
+                        proxies=proxies if proxies else None  # Explicitly set proxy
                     )
 
                 client_factory = insecure_client_factory
@@ -411,8 +430,11 @@ def check_proxy_configuration(use_proxy: bool) -> bool:
     return False
 
 
-def check_environment_variables() -> Dict[str, Optional[str]]:
+def check_environment_variables(no_auth: bool = False) -> Dict[str, Optional[str]]:
     """Check for required and optional environment variables.
+
+    Args:
+        no_auth: If True, disable authentication and show warning
 
     Returns:
         Dict with environment variable values
@@ -436,17 +458,38 @@ def check_environment_variables() -> Dict[str, Optional[str]]:
         )
         sys.exit(EXIT_MISSING_ENV_VAR)
 
+    # Handle --no-auth flag
+    if no_auth:
+        console.print(
+            Panel(
+                "[yellow]WARNING: Authentication disabled (--no-auth)[/yellow]\n\n"
+                "No Authorization header will be sent to the target MCP server.\n\n"
+                "[bold]Security Note:[/bold]\n"
+                "If the target server accepts requests without authentication,\n"
+                "this indicates a potential security issue with the target server.\n\n"
+                "This mode is intended for:\n"
+                "  - Development/testing environments\n"
+                "  - Secret URL endpoints (e.g., Zapier MCP servers)\n"
+                "  - Servers that error when receiving unexpected auth headers",
+                title="No Authentication Mode",
+                border_style="yellow",
+            )
+        )
+        # Force auth token to None when --no-auth is specified
+        mcp_auth_token = None
+    else:
+        # Normal auth token detection
+        if mcp_auth_token:
+            console.print("[green]Found MCP authentication token[/green]")
+        else:
+            console.print(
+                "[yellow]No MCP authentication token found (MCP_AUTH_TOKEN, HF_TOKEN, or HUGGINGFACE_TOKEN)[/yellow]"
+            )
+
     env_vars = {
         "openai_api_key": openai_api_key,
         "mcp_auth_token": mcp_auth_token,
     }
-
-    if mcp_auth_token:
-        console.print("[green]Found MCP authentication token[/green]")
-    else:
-        console.print(
-            "[yellow]No MCP authentication token found (MCP_AUTH_TOKEN, HF_TOKEN, or HUGGINGFACE_TOKEN)[/yellow]"
-        )
 
     return env_vars
 
@@ -550,6 +593,12 @@ Environment Variables:
         help="Maximum interrogation iterations (default: 5)",
     )
 
+    parser.add_argument(
+        "--no-auth",
+        action="store_true",
+        help="Disable authentication (do not send Authorization header). Use for development servers or secret URLs.",
+    )
+
     return parser.parse_args()
 
 
@@ -570,8 +619,8 @@ async def main():
     # Check proxy configuration
     use_proxy = check_proxy_configuration(args.proxy)
 
-    # Check environment variables
-    env_vars = check_environment_variables()
+    # Check environment variables (pass --no-auth flag)
+    env_vars = check_environment_variables(no_auth=args.no_auth)
 
     console.print()
     console.print(f"[cyan]Target MCP Server:[/cyan] {args.target}")
