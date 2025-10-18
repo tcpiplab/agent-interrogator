@@ -1,6 +1,7 @@
 """LLM interface implementations."""
 
 import json
+import os
 import platform
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional
@@ -8,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional
 if TYPE_CHECKING:
     from .output import OutputManager
 
+import httpx
 import torch
 from openai import AsyncOpenAI
 from transformers import pipeline
@@ -153,7 +155,21 @@ class OpenAILLM(LLMInterface):
         if config.llm.provider != ModelProvider.OPENAI:
             raise ValueError("OpenAILLM requires provider to be OPENAI")
 
-        self.client = AsyncOpenAI(api_key=config.llm.api_key)
+        # Detect if proxy is configured and create appropriate http client
+        http_proxy = os.getenv("http_proxy") or os.getenv("HTTP_PROXY")
+        https_proxy = os.getenv("https_proxy") or os.getenv("HTTPS_PROXY")
+        use_proxy = bool(http_proxy or https_proxy)
+
+        if use_proxy:
+            # Create httpx client with SSL verification disabled for proxy interception
+            http_client = httpx.AsyncClient(verify=False)
+            self.client = AsyncOpenAI(api_key=config.llm.api_key, http_client=http_client)
+            self.output.print_verbose(
+                "[yellow]Detected proxy configuration - SSL verification disabled for OpenAI client[/yellow]"
+            )
+        else:
+            self.client = AsyncOpenAI(api_key=config.llm.api_key)
+
         self.model_kwargs = config.llm.model_kwargs
 
     async def generate_prompt(self, context: Dict[str, Any]) -> str:
@@ -244,12 +260,28 @@ class OpenAILLM(LLMInterface):
             content = discovery.choices[0].message.content
             if content is None:
                 raise ValueError("OpenAI API returned empty content")
+
+            # Strip whitespace
+            content = content.strip()
+
+            # Try to extract JSON from markdown code block if present
+            import re
+
+            # Check for markdown code block
+            markdown_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', content, re.DOTALL)
+            if markdown_match:
+                content = markdown_match.group(1).strip()
+
             result = json.loads(content)
             if isinstance(result, dict):
                 return result
             else:
                 raise ValueError("Expected dictionary response from JSON")
         except json.JSONDecodeError as e:
+            self.output.print_verbose(
+                "[red]Failed to parse JSON response. Raw content:[/red]"
+            )
+            self.output.print_verbose(content)
             raise ValueError(f"Failed to process discovery response: {str(e)}")
 
     async def process_analysis_response(
