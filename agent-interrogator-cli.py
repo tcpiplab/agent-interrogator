@@ -150,16 +150,8 @@ class MCPCallback:
                     "[yellow]SSL verification disabled for proxy interception[/yellow]"
                 )
 
-                # Get proxy configuration from environment
-                http_proxy = os.getenv("http_proxy") or os.getenv("HTTP_PROXY")
-                https_proxy = os.getenv("https_proxy") or os.getenv("HTTPS_PROXY")
-
-                # Build proxy dict for httpx
-                proxies = {}
-                if http_proxy:
-                    proxies["http://"] = http_proxy
-                if https_proxy:
-                    proxies["https://"] = https_proxy
+                # Note: httpx automatically picks up http_proxy and https_proxy from environment
+                # so we don't need to explicitly pass them to AsyncClient
 
                 def insecure_client_factory(
                     headers: Optional[Dict[str, str]] = None,
@@ -170,6 +162,7 @@ class MCPCallback:
                         timeout = httpx.Timeout(self.timeout)
                     # Force HTTP/1.1 for proxy compatibility
                     # Some proxies don't handle HTTP/2 properly, so we explicitly disable it
+                    # httpx will automatically use http_proxy and https_proxy environment variables
                     return httpx.AsyncClient(
                         verify=False,
                         headers=headers,
@@ -177,7 +170,6 @@ class MCPCallback:
                         auth=auth,
                         http1=True,   # Explicitly enable HTTP/1.1
                         http2=False,  # Explicitly disable HTTP/2
-                        proxies=proxies if proxies else None  # Explicitly set proxy
                     )
 
                 client_factory = insecure_client_factory
@@ -195,7 +187,20 @@ class MCPCallback:
                     url=self.server_url, headers=headers, timeout=self.timeout
                 )
 
-            streams = await self._streams_context.__aenter__()
+            try:
+                streams = await self._streams_context.__aenter__()
+            except ExceptionGroup as eg:
+                # ExceptionGroup contains multiple errors - extract and display them
+                console.print(f"[red]Connection failed during HTTP handshake[/red]")
+                console.print(f"[red]Multiple errors occurred ({len(eg.exceptions)} sub-exceptions):[/red]")
+                for i, sub_exc in enumerate(eg.exceptions, 1):
+                    console.print(f"[red]  {i}. {type(sub_exc).__name__}: {str(sub_exc)}[/red]")
+                raise
+            except Exception as e:
+                # HTTP errors often happen here during the initial connection
+                console.print(f"[red]Connection failed during HTTP handshake[/red]")
+                console.print(f"[red]Error details: {type(e).__name__}: {str(e)}[/red]")
+                raise
 
             # Unpack streams: (read_stream, write_stream, get_session_id_callback)
             read_stream, write_stream, get_session_id = streams
@@ -205,7 +210,39 @@ class MCPCallback:
             self.session = await self._session_context.__aenter__()
 
             # Initialize the session with the server
-            init_result = await self.session.initialize()
+            console.print("[cyan]Performing MCP handshake...[/cyan]")
+            try:
+                init_result = await self.session.initialize()
+            except asyncio.CancelledError as e:
+                # This typically happens when the server doesn't respond to the handshake
+                # Often indicates the server requires authentication but is silently dropping requests
+                console.print(
+                    Panel(
+                        "[bold red]MCP Handshake Timeout[/bold red]\n\n"
+                        f"The server at {self.server_url} accepted the connection but did not\n"
+                        "respond to the MCP initialization handshake.\n\n"
+                        "[bold]This usually means:[/bold]\n\n"
+                        "1. [cyan]Authentication Required:[/cyan] The server requires OAuth authentication\n"
+                        "   but is silently dropping unauthenticated requests instead of\n"
+                        "   returning a 401 error.\n\n"
+                        "2. [cyan]Server Misconfiguration:[/cyan] The MCP server may not be properly\n"
+                        "   configured or may not be running at this endpoint.\n\n"
+                        "3. [cyan]Network Issues:[/cyan] Firewall or proxy is blocking MCP protocol traffic.\n\n"
+                        "[bold]Recommended next steps:[/bold]\n\n"
+                        "- Obtain a valid OAuth access token and retry with:\n"
+                        f"  [dim]./agent-interrogator-cli.py --target {self.server_url} --oauth-token YOUR_TOKEN[/dim]\n\n"
+                        "- Check if the server has OAuth documentation or an authorization flow",
+                        title="Connection Timeout",
+                        border_style="red",
+                    )
+                )
+                await self.cleanup()
+                sys.exit(EXIT_MCP_CONNECTION_FAILED)
+            except Exception as e:
+                # Other MCP handshake errors happen here
+                console.print(f"[red]MCP handshake failed[/red]")
+                console.print(f"[red]Error details: {type(e).__name__}: {str(e)}[/red]")
+                raise
 
             # Extract server info
             if hasattr(init_result, "serverInfo"):
@@ -296,6 +333,52 @@ class MCPCallback:
 
             self.initialized = True
 
+        except httpx.HTTPStatusError as e:
+            # Handle HTTP authentication errors with helpful messages
+            if e.response.status_code == 401:
+                console.print(
+                    Panel(
+                        "[bold red]Authentication Failed (401 Unauthorized)[/bold red]\n\n"
+                        f"The MCP server at {self.server_url} rejected the authentication.\n\n"
+                        "[bold]Possible solutions:[/bold]\n\n"
+                        "1. [cyan]OAuth Token:[/cyan] This server likely requires OAuth authentication.\n"
+                        "   Use --oauth-token with a valid access token:\n"
+                        f"   [dim]./agent-interrogator-cli.py --target {self.server_url} --oauth-token YOUR_TOKEN[/dim]\n\n"
+                        "2. [cyan]No Auth:[/cyan] Try without authentication (for public/dev servers):\n"
+                        f"   [dim]./agent-interrogator-cli.py --target {self.server_url} --no-auth[/dim]\n\n"
+                        "3. [cyan]Wrong Token:[/cyan] If you provided a token, it may be invalid or expired.\n"
+                        "   Check your token or obtain a new one from the service provider.",
+                        title="Authentication Error",
+                        border_style="red",
+                    )
+                )
+            elif e.response.status_code == 403:
+                console.print(
+                    Panel(
+                        "[bold red]Access Forbidden (403 Forbidden)[/bold red]\n\n"
+                        f"The MCP server at {self.server_url} refused access.\n\n"
+                        "[bold]Possible reasons:[/bold]\n\n"
+                        "1. Your credentials are valid but lack required permissions\n"
+                        "2. The resource requires specific OAuth scopes you don't have\n"
+                        "3. The server has IP/rate limiting restrictions\n"
+                        "4. Your token may be valid but not authorized for MCP access",
+                        title="Access Forbidden",
+                        border_style="red",
+                    )
+                )
+            else:
+                console.print(
+                    Panel(
+                        f"[bold red]HTTP Error {e.response.status_code}[/bold red]\n\n"
+                        f"The MCP server returned: {e.response.status_code} {e.response.reason_phrase}\n\n"
+                        f"URL: {self.server_url}\n"
+                        f"Error: {str(e)}",
+                        title="HTTP Error",
+                        border_style="red",
+                    )
+                )
+            await self.cleanup()
+            raise
         except Exception as e:
             console.print(f"[red]Failed to initialize MCP connection: {str(e)}[/red]")
             console.print(f"[red]Error type: {type(e).__name__}[/red]")
@@ -303,31 +386,56 @@ class MCPCallback:
             raise
 
     async def cleanup(self):
-        """Clean up resources and close connection."""
+        """Clean up resources and close connection.
+
+        This method is designed to handle cleanup even after partial initialization
+        failures (e.g., 401 errors during handshake). It suppresses cascading errors
+        that occur when closing contexts that were never fully established.
+        """
+        cleanup_errors = []
+
+        # Close session context (if it was created)
         if self._session_context and self.session:
             try:
                 await self._session_context.__aexit__(None, None, None)
+            except (asyncio.CancelledError, RuntimeError, GeneratorExit, ExceptionGroup) as e:
+                # These are expected when cleaning up after failed initialization
+                # Don't print them as they just add noise
+                pass
             except Exception as e:
-                console.print(f"[yellow]Error closing session: {e}[/yellow]")
-            self.session = None
-            self._session_context = None
+                cleanup_errors.append(f"session: {type(e).__name__}")
+            finally:
+                self.session = None
+                self._session_context = None
 
+        # Close streams context (if it was created)
         if self._streams_context:
             try:
                 await self._streams_context.__aexit__(None, None, None)
+            except (asyncio.CancelledError, RuntimeError, GeneratorExit, ExceptionGroup) as e:
+                # These are expected when cleaning up after failed initialization
+                pass
             except Exception as e:
-                console.print(f"[yellow]Error closing streams: {e}[/yellow]")
-            self._streams_context = None
+                cleanup_errors.append(f"streams: {type(e).__name__}")
+            finally:
+                self._streams_context = None
 
+        # Close HTTP client (if it was created)
         if self._http_client:
             try:
                 await self._http_client.aclose()
             except Exception as e:
-                console.print(f"[yellow]Error closing HTTP client: {e}[/yellow]")
-            self._http_client = None
+                cleanup_errors.append(f"HTTP client: {type(e).__name__}")
+            finally:
+                self._http_client = None
 
         self.initialized = False
-        console.print("[cyan]MCP connection closed[/cyan]")
+
+        # Only print cleanup errors if there were unexpected errors (not expected async errors)
+        if cleanup_errors:
+            console.print(f"[yellow]Cleanup warnings: {', '.join(cleanup_errors)}[/yellow]")
+        else:
+            console.print("[cyan]MCP connection closed[/cyan]")
 
     async def __call__(self, prompt: str) -> str:
         """Handle a prompt by interacting with the MCP server.
@@ -390,7 +498,7 @@ def check_proxy_configuration(use_proxy: bool) -> bool:
             Panel(
                 "[red]Proxy requested but environment variables not set![/red]\n\n"
                 "To use a proxy, set these environment variables:\n\n"
-                "[cyan]export http_proxy=http://127.0.0.1:8080\n"
+                "[cyan]export http_proxy=http://127.0.0.1:8080 && "
                 "export https_proxy=http://127.0.0.1:8080[/cyan]\n\n"
                 "Then run the tool again with --proxy flag.",
                 title="Proxy Configuration Error",
@@ -430,11 +538,12 @@ def check_proxy_configuration(use_proxy: bool) -> bool:
     return False
 
 
-def check_environment_variables(no_auth: bool = False) -> Dict[str, Optional[str]]:
+def check_environment_variables(no_auth: bool = False, oauth_token: Optional[str] = None) -> Dict[str, Optional[str]]:
     """Check for required and optional environment variables.
 
     Args:
         no_auth: If True, disable authentication and show warning
+        oauth_token: Pre-authenticated OAuth token from CLI argument
 
     Returns:
         Dict with environment variable values
@@ -458,8 +567,22 @@ def check_environment_variables(no_auth: bool = False) -> Dict[str, Optional[str
         )
         sys.exit(EXIT_MISSING_ENV_VAR)
 
-    # Handle --no-auth flag
-    if no_auth:
+    # Priority: --oauth-token > --no-auth > environment variables
+    if oauth_token:
+        # OAuth token from CLI takes highest priority
+        console.print(
+            Panel(
+                "[green]Using OAuth token from --oauth-token argument[/green]\n\n"
+                "This token will be sent as: Authorization: Bearer <token>\n\n"
+                "[bold]Note:[/bold] Make sure this token is valid for the target MCP server.\n"
+                "OAuth tokens typically expire and may need to be refreshed.",
+                title="OAuth Authentication",
+                border_style="green",
+            )
+        )
+        mcp_auth_token = oauth_token
+    elif no_auth:
+        # Handle --no-auth flag
         console.print(
             Panel(
                 "[yellow]WARNING: Authentication disabled (--no-auth)[/yellow]\n\n"
@@ -478,9 +601,9 @@ def check_environment_variables(no_auth: bool = False) -> Dict[str, Optional[str
         # Force auth token to None when --no-auth is specified
         mcp_auth_token = None
     else:
-        # Normal auth token detection
+        # Normal auth token detection from environment variables
         if mcp_auth_token:
-            console.print("[green]Found MCP authentication token[/green]")
+            console.print("[green]Found MCP authentication token in environment[/green]")
         else:
             console.print(
                 "[yellow]No MCP authentication token found (MCP_AUTH_TOKEN, HF_TOKEN, or HUGGINGFACE_TOKEN)[/yellow]"
@@ -492,6 +615,304 @@ def check_environment_variables(no_auth: bool = False) -> Dict[str, Optional[str
     }
 
     return env_vars
+
+
+async def detect_auth_requirements(
+    server_url: str,
+    timeout: int = 10,
+    insecure: bool = False
+) -> Dict[str, Any]:
+    """Probe server to detect authentication requirements.
+
+    This function sends pre-flight requests to detect OAuth/authentication requirements:
+    1. HEAD request to server (checks WWW-Authenticate header)
+    2. GET .well-known/oauth-authorization-server (RFC 8414)
+    3. GET .well-known/openid-configuration (OpenID Connect Discovery)
+
+    Args:
+        server_url: Target MCP server URL
+        timeout: Request timeout in seconds
+        insecure: Disable SSL verification for proxy interception
+
+    Returns:
+        Dict with detection results:
+        - requires_auth: bool
+        - www_authenticate: Optional[str]
+        - auth_type: Optional[str] (e.g., "Bearer", "OAuth")
+        - oauth_endpoints: Dict with discovered OAuth endpoints
+        - error: Optional[str]
+    """
+    from urllib.parse import urlparse, urljoin
+
+    console.print("[cyan]Probing server for authentication requirements...[/cyan]")
+
+    results = {
+        "requires_auth": False,
+        "www_authenticate": None,
+        "auth_type": None,
+        "auth_realm": None,
+        "auth_error": None,
+        "oauth_endpoints": {},
+        "openid_config": {},
+        "error": None,
+    }
+
+    # Configure httpx client
+    # Note: httpx automatically picks up http_proxy and https_proxy environment variables
+    # so we don't need to explicitly pass them
+    client_kwargs = {
+        "timeout": httpx.Timeout(timeout),
+        "follow_redirects": True,
+    }
+
+    if insecure:
+        client_kwargs["verify"] = False
+
+    async with httpx.AsyncClient(**client_kwargs) as client:
+        # Step 1: Send HEAD request to detect WWW-Authenticate header
+        try:
+            console.print(f"  [dim]Sending HEAD request to {server_url}...[/dim]")
+            response = await client.head(server_url)
+
+            # Check for authentication-related status codes
+            if response.status_code in [401, 403]:
+                results["requires_auth"] = True
+
+                # Check for WWW-Authenticate header
+                www_auth = response.headers.get("WWW-Authenticate")
+                if www_auth:
+                    results["www_authenticate"] = www_auth
+
+                    # Parse auth type (e.g., "Bearer realm=...")
+                    auth_parts = www_auth.split(None, 1)
+                    if auth_parts:
+                        results["auth_type"] = auth_parts[0]
+
+                        # Extract realm if present
+                        if len(auth_parts) > 1:
+                            params_str = auth_parts[1]
+                            if 'realm="' in params_str:
+                                realm_start = params_str.find('realm="') + 7
+                                realm_end = params_str.find('"', realm_start)
+                                if realm_end > realm_start:
+                                    results["auth_realm"] = params_str[realm_start:realm_end]
+
+                            # Extract error if present
+                            if 'error="' in params_str:
+                                error_start = params_str.find('error="') + 7
+                                error_end = params_str.find('"', error_start)
+                                if error_end > error_start:
+                                    results["auth_error"] = params_str[error_start:error_end]
+
+                    console.print(f"    [green]{response.status_code} response with WWW-Authenticate: {results['auth_type']}[/green]")
+                else:
+                    if response.status_code == 401:
+                        console.print("    [yellow]401 response but no WWW-Authenticate header[/yellow]")
+                    elif response.status_code == 403:
+                        console.print("    [yellow]403 Forbidden - likely requires authentication[/yellow]")
+            else:
+                # Check for WWW-Authenticate header even on 2xx responses (some servers send it)
+                www_auth = response.headers.get("WWW-Authenticate")
+                if www_auth:
+                    results["www_authenticate"] = www_auth
+                    results["requires_auth"] = True
+
+                    # Parse auth type (e.g., "Bearer realm=...")
+                    auth_parts = www_auth.split(None, 1)
+                    if auth_parts:
+                        results["auth_type"] = auth_parts[0]
+
+                        # Extract realm if present
+                        if len(auth_parts) > 1:
+                            params_str = auth_parts[1]
+                            if 'realm="' in params_str:
+                                realm_start = params_str.find('realm="') + 7
+                                realm_end = params_str.find('"', realm_start)
+                                if realm_end > realm_start:
+                                    results["auth_realm"] = params_str[realm_start:realm_end]
+
+                            # Extract error if present
+                            if 'error="' in params_str:
+                                error_start = params_str.find('error="') + 7
+                                error_end = params_str.find('"', error_start)
+                                if error_end > error_start:
+                                    results["auth_error"] = params_str[error_start:error_end]
+
+                    console.print(f"    [green]Found WWW-Authenticate: {results['auth_type']}[/green]")
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                results["requires_auth"] = True
+                www_auth = e.response.headers.get("WWW-Authenticate")
+                if www_auth:
+                    results["www_authenticate"] = www_auth
+                    auth_parts = www_auth.split(None, 1)
+                    if auth_parts:
+                        results["auth_type"] = auth_parts[0]
+                    console.print(f"    [green]401 response with WWW-Authenticate: {results['auth_type']}[/green]")
+                else:
+                    console.print("    [yellow]401 response but no WWW-Authenticate header[/yellow]")
+            elif e.response.status_code == 403:
+                results["requires_auth"] = True
+                console.print("    [yellow]403 Forbidden - likely requires authentication[/yellow]")
+        except Exception as e:
+            console.print(f"    [yellow]HEAD request failed: {type(e).__name__}: {str(e)}[/yellow]")
+            results["error"] = f"HEAD request failed: {str(e)}"
+
+        # Step 2: Check .well-known/oauth-authorization-server (RFC 8414)
+        parsed_url = urlparse(server_url)
+        well_known_oauth_url = f"{parsed_url.scheme}://{parsed_url.netloc}/.well-known/oauth-authorization-server"
+
+        try:
+            console.print(f"  [dim]Checking {well_known_oauth_url}...[/dim]")
+            response = await client.get(well_known_oauth_url)
+            if response.status_code == 200:
+                try:
+                    oauth_config = response.json()
+                    results["oauth_endpoints"] = {
+                        "authorization_endpoint": oauth_config.get("authorization_endpoint"),
+                        "token_endpoint": oauth_config.get("token_endpoint"),
+                        "issuer": oauth_config.get("issuer"),
+                        "grant_types_supported": oauth_config.get("grant_types_supported", []),
+                    }
+                    results["requires_auth"] = True
+                    console.print("    [green]Found OAuth authorization server metadata[/green]")
+                except json.JSONDecodeError:
+                    console.print("    [yellow]Found endpoint but response is not valid JSON[/yellow]")
+        except Exception as e:
+            console.print(f"    [dim]Not found or error: {type(e).__name__}[/dim]")
+
+        # Step 3: Check .well-known/openid-configuration (OpenID Connect Discovery)
+        well_known_oidc_url = f"{parsed_url.scheme}://{parsed_url.netloc}/.well-known/openid-configuration"
+
+        try:
+            console.print(f"  [dim]Checking {well_known_oidc_url}...[/dim]")
+            response = await client.get(well_known_oidc_url)
+            if response.status_code == 200:
+                try:
+                    oidc_config = response.json()
+                    results["openid_config"] = {
+                        "issuer": oidc_config.get("issuer"),
+                        "authorization_endpoint": oidc_config.get("authorization_endpoint"),
+                        "token_endpoint": oidc_config.get("token_endpoint"),
+                        "userinfo_endpoint": oidc_config.get("userinfo_endpoint"),
+                        "scopes_supported": oidc_config.get("scopes_supported", []),
+                    }
+                    results["requires_auth"] = True
+                    console.print("    [green]Found OpenID Connect configuration[/green]")
+                except json.JSONDecodeError:
+                    console.print("    [yellow]Found endpoint but response is not valid JSON[/yellow]")
+        except Exception as e:
+            console.print(f"    [dim]Not found or error: {type(e).__name__}[/dim]")
+
+    return results
+
+
+def display_auth_detection_results(results: Dict[str, Any], server_url: str):
+    """Display authentication detection results in a formatted panel.
+
+    Args:
+        results: Detection results from detect_auth_requirements()
+        server_url: Target server URL
+    """
+    if not results["requires_auth"] and not results["oauth_endpoints"] and not results["openid_config"]:
+        # No authentication detected
+        console.print(
+            Panel(
+                "[yellow]No Authentication Detected[/yellow]\n\n"
+                f"The server at {server_url} did not indicate any authentication requirements.\n\n"
+                "[bold]Findings:[/bold]\n"
+                "- No WWW-Authenticate header found\n"
+                "- No OAuth authorization server metadata\n"
+                "- No OpenID Connect configuration\n\n"
+                "[dim]Note: The server may still require authentication but doesn't advertise it\n"
+                "through standard discovery mechanisms. Try connecting with --no-auth first,\n"
+                "then with authentication if that fails.[/dim]",
+                title="Authentication Detection Results",
+                border_style="yellow",
+            )
+        )
+        return
+
+    # Build findings text
+    findings = []
+
+    if results["www_authenticate"]:
+        findings.append(f"[green]WWW-Authenticate Header Found[/green]")
+        findings.append(f"  Type: {results['auth_type']}")
+        if results["auth_realm"]:
+            findings.append(f"  Realm: {results['auth_realm']}")
+        if results["auth_error"]:
+            findings.append(f"  Error: {results['auth_error']}")
+        findings.append("")
+
+    if results["oauth_endpoints"]:
+        findings.append("[green]OAuth Authorization Server Discovered[/green]")
+        oauth_ep = results["oauth_endpoints"]
+        if oauth_ep.get("issuer"):
+            findings.append(f"  Issuer: {oauth_ep['issuer']}")
+        if oauth_ep.get("authorization_endpoint"):
+            findings.append(f"  Authorization: {oauth_ep['authorization_endpoint']}")
+        if oauth_ep.get("token_endpoint"):
+            findings.append(f"  Token: {oauth_ep['token_endpoint']}")
+        if oauth_ep.get("grant_types_supported"):
+            findings.append(f"  Grant Types: {', '.join(oauth_ep['grant_types_supported'])}")
+        findings.append("")
+
+    if results["openid_config"]:
+        findings.append("[green]OpenID Connect Configuration Found[/green]")
+        oidc = results["openid_config"]
+        if oidc.get("issuer"):
+            findings.append(f"  Issuer: {oidc['issuer']}")
+        if oidc.get("authorization_endpoint"):
+            findings.append(f"  Authorization: {oidc['authorization_endpoint']}")
+        if oidc.get("token_endpoint"):
+            findings.append(f"  Token: {oidc['token_endpoint']}")
+        if oidc.get("scopes_supported"):
+            scopes = ", ".join(oidc['scopes_supported'][:5])
+            if len(oidc['scopes_supported']) > 5:
+                scopes += f" (and {len(oidc['scopes_supported']) - 5} more)"
+            findings.append(f"  Scopes: {scopes}")
+        findings.append("")
+
+    # Build recommendations
+    recommendations = []
+
+    if results["auth_type"] == "Bearer" or results["oauth_endpoints"] or results["openid_config"]:
+        recommendations.append(
+            "[bold]This server requires OAuth/Bearer token authentication.[/bold]\n"
+        )
+        recommendations.append(
+            "To connect, obtain a valid access token and use:\n"
+            f"  [cyan]./agent-interrogator-cli.py --target {server_url} --oauth-token YOUR_TOKEN[/cyan]\n"
+        )
+
+        if results["oauth_endpoints"].get("authorization_endpoint"):
+            recommendations.append(
+                f"Authorization endpoint: {results['oauth_endpoints']['authorization_endpoint']}"
+            )
+    else:
+        recommendations.append(
+            "[bold]This server requires authentication.[/bold]\n"
+        )
+        recommendations.append(
+            "Try providing authentication credentials using:\n"
+            f"  [cyan]./agent-interrogator-cli.py --target {server_url} --oauth-token YOUR_TOKEN[/cyan]"
+        )
+
+    findings_text = "\n".join(findings)
+    recommendations_text = "\n".join(recommendations)
+
+    console.print(
+        Panel(
+            f"[bold green]Authentication Required[/bold green]\n\n"
+            f"{findings_text}"
+            f"[bold]Recommendations:[/bold]\n\n"
+            f"{recommendations_text}",
+            title="Authentication Detection Results",
+            border_style="green",
+        )
+    )
 
 
 def save_output(profile: str, output_formats: List[str], target_url: str):
@@ -599,6 +1020,17 @@ Environment Variables:
         help="Disable authentication (do not send Authorization header). Use for development servers or secret URLs.",
     )
 
+    parser.add_argument(
+        "--oauth-token",
+        help="Pre-authenticated OAuth access token. Use this when the MCP server requires OAuth authentication. Overrides environment variables.",
+    )
+
+    parser.add_argument(
+        "--guess-auth-type",
+        action="store_true",
+        help="Probe the server to detect authentication requirements before connecting. Checks WWW-Authenticate headers and .well-known OAuth discovery endpoints.",
+    )
+
     return parser.parse_args()
 
 
@@ -619,8 +1051,8 @@ async def main():
     # Check proxy configuration
     use_proxy = check_proxy_configuration(args.proxy)
 
-    # Check environment variables (pass --no-auth flag)
-    env_vars = check_environment_variables(no_auth=args.no_auth)
+    # Check environment variables (pass --no-auth flag and --oauth-token)
+    env_vars = check_environment_variables(no_auth=args.no_auth, oauth_token=args.oauth_token)
 
     console.print()
     console.print(f"[cyan]Target MCP Server:[/cyan] {args.target}")
@@ -628,6 +1060,18 @@ async def main():
     console.print(f"[cyan]Timeout:[/cyan] {args.timeout} seconds")
     console.print(f"[cyan]Max Iterations:[/cyan] {args.max_iterations}")
     console.print()
+
+    # Optional: Detect authentication requirements before connecting
+    if args.guess_auth_type:
+        console.print()
+        auth_results = await detect_auth_requirements(
+            server_url=args.target,
+            timeout=args.timeout,
+            insecure=use_proxy
+        )
+        console.print()
+        display_auth_detection_results(auth_results, args.target)
+        console.print()
 
     # Initialize configuration
     config = InterrogationConfig(
