@@ -35,11 +35,33 @@ from dotenv import load_dotenv
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 import httpx
+from urllib.parse import urlparse
 
 from agent_interrogator import AgentInterrogator
 
 # Load environment variables from .env file if present
 load_dotenv(override=True)
+
+
+def should_use_hf_token(url: str) -> bool:
+    """Check if the target URL is a HuggingFace domain.
+
+    Only HuggingFace domains should receive the HuggingFace authentication token
+    to prevent credential leaking to arbitrary MCP servers during security testing.
+
+    Args:
+        url: The target URL to check
+
+    Returns:
+        True if the URL is a huggingface.co domain, False otherwise
+    """
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname or ""
+        # Check if hostname is exactly huggingface.co or a subdomain of it
+        return hostname == "huggingface.co" or hostname.endswith(".huggingface.co")
+    except Exception:
+        return False
 
 
 class MCPCallback:
@@ -123,9 +145,15 @@ class MCPCallback:
 
         try:
             # Prepare headers for Bearer token authentication
+            # SECURITY: Only include HuggingFace token when targeting huggingface.co domains
+            # This prevents credential leaking to arbitrary MCP servers during pentesting
             headers = {}
-            if self.auth_token:
+            if self.auth_token and should_use_hf_token(self.server_url):
                 headers["Authorization"] = f"Bearer {self.auth_token}"
+                print(f"Using HuggingFace authentication token (target domain verified)")
+            elif self.auth_token and not should_use_hf_token(self.server_url):
+                print(f"Warning: HuggingFace token provided but target is not huggingface.co domain")
+                print(f"Token will NOT be sent to protect against credential leaking")
 
             # Create httpx client factory with optional SSL verification bypass
             client_factory = None
