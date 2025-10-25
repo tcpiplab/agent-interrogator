@@ -60,6 +60,9 @@ class LLMConfig(BaseModel):
     huggingface: Optional[HuggingFaceConfig] = Field(
         None, description="HuggingFace-specific configuration options"
     )
+    rate_limit_seconds: Optional[float] = Field(
+        None, description="Minimum delay in seconds between LLM API calls. Used to avoid rate limits during extended interrogation sessions."
+    )
 
 
 class InterrogationConfig(BaseModel):

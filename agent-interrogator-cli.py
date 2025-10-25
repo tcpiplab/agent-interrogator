@@ -76,6 +76,151 @@ EXIT_MCP_CONNECTION_FAILED = 4
 EXIT_INTERROGATION_FAILED = 5
 
 
+def should_use_hf_token(url: str) -> bool:
+    """Check if the target URL is a HuggingFace domain.
+
+    Only HuggingFace domains should receive the HuggingFace authentication token
+    to prevent credential leaking to arbitrary MCP servers during security testing.
+
+    Args:
+        url: The target URL to check
+
+    Returns:
+        True if the URL is a huggingface.co domain, False otherwise
+    """
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        hostname = parsed.hostname or ""
+        # Check if hostname is exactly huggingface.co or a subdomain of it
+        return hostname == "huggingface.co" or hostname.endswith(".huggingface.co")
+    except Exception:
+        return False
+
+
+def parse_and_validate_headers(header_strings: Optional[List[str]]) -> Dict[str, str]:
+    """Parse and validate custom HTTP headers from CLI arguments.
+
+    Args:
+        header_strings: List of header strings in format "Header-Name: value"
+
+    Returns:
+        Dict mapping header names to values
+
+    Exits:
+        EXIT_GENERAL_ERROR if any header has invalid format
+    """
+    if not header_strings:
+        return {}
+
+    headers = {}
+    import re
+
+    # Header format: Header-Name: value
+    # Header names can contain letters, numbers, hyphens
+    # Values can be any string
+    header_pattern = re.compile(r'^([A-Za-z0-9\-]+):\s*(.+)$')
+
+    for header_str in header_strings:
+        match = header_pattern.match(header_str)
+        if not match:
+            console.print(
+                Panel(
+                    f"[red]Invalid header format:[/red] {header_str}\n\n"
+                    "[bold]Expected format:[/bold] Header-Name: value\n\n"
+                    "[bold]Valid examples:[/bold]\n"
+                    '  --header "X-Pentest: Company_Name"\n'
+                    '  --header "X-Vendor: tcpiplab.com"\n'
+                    '  --header "User-Agent: CustomAgent/1.0"\n\n'
+                    "[bold]Rules:[/bold]\n"
+                    "  - Header name must contain only letters, numbers, and hyphens\n"
+                    "  - Header name and value must be separated by a colon\n"
+                    "  - Value can be any non-empty string",
+                    title="Header Validation Error",
+                    border_style="red",
+                )
+            )
+            sys.exit(EXIT_GENERAL_ERROR)
+
+        header_name = match.group(1)
+        header_value = match.group(2).strip()
+
+        if not header_value:
+            console.print(
+                Panel(
+                    f"[red]Empty header value:[/red] {header_name}\n\n"
+                    "Header values cannot be empty.",
+                    title="Header Validation Error",
+                    border_style="red",
+                )
+            )
+            sys.exit(EXIT_GENERAL_ERROR)
+
+        # Check for duplicates
+        if header_name in headers:
+            console.print(
+                Panel(
+                    f"[yellow]Warning: Duplicate header '{header_name}'[/yellow]\n\n"
+                    f"Previous value: {headers[header_name]}\n"
+                    f"New value: {header_value}\n\n"
+                    "The new value will override the previous one.",
+                    title="Duplicate Header",
+                    border_style="yellow",
+                )
+            )
+
+        headers[header_name] = header_value
+
+    return headers
+
+
+def create_rate_limited_callback(callback: Any, delay: float = 5.0) -> Any:
+    """Wrap a callback with rate limiting to add delay between requests.
+
+    Args:
+        callback: The original callback to wrap
+        delay: Delay in seconds between requests (default: 5.0)
+
+    Returns:
+        Rate-limited callback wrapper
+    """
+    import time
+
+    class RateLimitedCallback:
+        """Wrapper that adds rate limiting to callback invocations."""
+
+        def __init__(self, wrapped_callback: Any, delay: float):
+            self.wrapped_callback = wrapped_callback
+            self.delay = delay
+            self.last_call_time: Optional[float] = None
+
+        async def __call__(self, prompt: str) -> str:
+            """Add rate limiting delay before calling wrapped callback."""
+            # Enforce rate limit by waiting if needed
+            if self.last_call_time is not None:
+                elapsed = time.time() - self.last_call_time
+                if elapsed < self.delay:
+                    wait_time = self.delay - elapsed
+                    console.print(f"[dim]Rate limiting: waiting {wait_time:.1f}s before next request...[/dim]")
+                    await asyncio.sleep(wait_time)
+
+            # Call the wrapped callback
+            self.last_call_time = time.time()
+            return await self.wrapped_callback(prompt)
+
+        async def initialize(self):
+            """Pass through initialization to wrapped callback."""
+            if hasattr(self.wrapped_callback, 'initialize'):
+                await self.wrapped_callback.initialize()
+
+        async def cleanup(self):
+            """Pass through cleanup to wrapped callback."""
+            if hasattr(self.wrapped_callback, 'cleanup'):
+                await self.wrapped_callback.cleanup()
+
+    return RateLimitedCallback(callback, delay)
+
+
 class MCPCallback:
     """Callback for interacting with a Model Context Protocol (MCP) server.
 
@@ -92,6 +237,7 @@ class MCPCallback:
         auth_token: Optional[str] = None,
         timeout: int = 30,
         insecure: bool = False,
+        custom_headers: Optional[Dict[str, str]] = None,
     ):
         """Initialize the MCP callback.
 
@@ -102,6 +248,7 @@ class MCPCallback:
             auth_token: Optional Bearer authentication token
             timeout: Request timeout in seconds
             insecure: Disable SSL certificate verification for proxy interception
+            custom_headers: Optional dict of custom HTTP headers to add to all MCP requests
         """
         self.server_url = server_url.rstrip("/")
         self.client_name = client_name
@@ -109,6 +256,7 @@ class MCPCallback:
         self.auth_token = auth_token
         self.timeout = timeout
         self.insecure = insecure
+        self.custom_headers = custom_headers or {}
 
         # MCP SDK session management
         self.session: Optional[ClientSession] = None
@@ -138,10 +286,22 @@ class MCPCallback:
 
         try:
             # Prepare headers for Bearer token authentication
+            # SECURITY: Only include HuggingFace token when targeting huggingface.co domains
+            # This prevents credential leaking to arbitrary MCP servers during pentesting
             headers = {}
-            if self.auth_token:
+            if self.auth_token and should_use_hf_token(self.server_url):
                 headers["Authorization"] = f"Bearer {self.auth_token}"
-                console.print("[green]Using Bearer token authentication[/green]")
+                console.print("[green]Using Bearer token authentication (target domain verified)[/green]")
+            elif self.auth_token and not should_use_hf_token(self.server_url):
+                console.print("[yellow]Warning: HuggingFace token provided but target is not huggingface.co domain[/yellow]")
+                console.print("[yellow]Token will NOT be sent to protect against credential leaking[/yellow]")
+
+            # Merge custom headers (these only go to MCP server, not LLM API)
+            if self.custom_headers:
+                console.print(f"[green]Applying {len(self.custom_headers)} custom HTTP header(s) to MCP requests[/green]")
+                for header_name, header_value in self.custom_headers.items():
+                    console.print(f"  [dim]{header_name}: {header_value}[/dim]")
+                headers.update(self.custom_headers)
 
             # Create httpx client factory with optional SSL verification bypass
             client_factory = None
@@ -1031,6 +1191,32 @@ Environment Variables:
         help="Probe the server to detect authentication requirements before connecting. Checks WWW-Authenticate headers and .well-known OAuth discovery endpoints.",
     )
 
+    parser.add_argument(
+        "--rate-limit-target",
+        type=int,
+        nargs='?',
+        const=3,
+        metavar='SECONDS',
+        help="Enable rate limiting for target MCP server requests. Defaults to 3 second delay between requests if no value specified. Useful for avoiding detection during reconnaissance.",
+    )
+
+    parser.add_argument(
+        "--rate-limit-llm",
+        type=int,
+        nargs='?',
+        const=3,
+        metavar='SECONDS',
+        help="Enable rate limiting for LLM API calls. Defaults to 3 second delay between calls if no value specified. Helps avoid hitting OpenAI rate limits during extended sessions.",
+    )
+
+    parser.add_argument(
+        "--header",
+        action="append",
+        dest="custom_headers",
+        metavar='HEADER',
+        help='Add custom HTTP header to target MCP server requests (can be specified multiple times). Format: "Header-Name: value". Example: --header "X-Pentest: Company_Name" --header "X-Vendor: tcpiplab.com". Headers are only sent to the target MCP server, not to LLM API calls.',
+    )
+
     return parser.parse_args()
 
 
@@ -1054,11 +1240,27 @@ async def main():
     # Check environment variables (pass --no-auth flag and --oauth-token)
     env_vars = check_environment_variables(no_auth=args.no_auth, oauth_token=args.oauth_token)
 
+    # Parse and validate custom headers
+    custom_headers = parse_and_validate_headers(args.custom_headers)
+
     console.print()
     console.print(f"[cyan]Target MCP Server:[/cyan] {args.target}")
     console.print(f"[cyan]OpenAI Model:[/cyan] {args.openai_model_name}")
     console.print(f"[cyan]Timeout:[/cyan] {args.timeout} seconds")
     console.print(f"[cyan]Max Iterations:[/cyan] {args.max_iterations}")
+
+    # Display rate limiting configuration
+    if args.rate_limit_target:
+        console.print(f"[green]Target Rate Limiting:[/green] Enabled ({args.rate_limit_target}s delay between requests)")
+    if args.rate_limit_llm:
+        console.print(f"[green]LLM Rate Limiting:[/green] Enabled ({args.rate_limit_llm}s delay between API calls)")
+
+    # Display custom headers configuration
+    if custom_headers:
+        console.print(f"[green]Custom Headers:[/green] {len(custom_headers)} header(s) configured for target MCP server")
+        for header_name in custom_headers.keys():
+            console.print(f"  [dim]- {header_name}[/dim]")
+
     console.print()
 
     # Optional: Detect authentication requirements before connecting
@@ -1079,6 +1281,7 @@ async def main():
             provider=ModelProvider.OPENAI,
             model_name=args.openai_model_name,
             api_key=env_vars["openai_api_key"],
+            rate_limit_seconds=float(args.rate_limit_llm) if args.rate_limit_llm else None,
         ),
         max_iterations=args.max_iterations,
     )
@@ -1091,7 +1294,13 @@ async def main():
         auth_token=env_vars["mcp_auth_token"],
         timeout=args.timeout,
         insecure=use_proxy,
+        custom_headers=custom_headers,
     )
+
+    # Apply rate limiting wrapper if requested
+    if args.rate_limit_target:
+        callback = create_rate_limited_callback(callback, delay=float(args.rate_limit_target))
+        console.print(f"[green]Target rate limiting wrapper applied ({args.rate_limit_target}s delay)[/green]")
 
     try:
         # Initialize MCP connection

@@ -1,8 +1,10 @@
 """LLM interface implementations."""
 
+import asyncio
 import json
 import os
 import platform
+import time
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional
 
@@ -172,6 +174,26 @@ class OpenAILLM(LLMInterface):
 
         self.model_kwargs = config.llm.model_kwargs
 
+        # Rate limiting configuration
+        self.rate_limit_seconds = config.llm.rate_limit_seconds
+        self.last_call_time: Optional[float] = None
+
+    async def _enforce_rate_limit(self) -> None:
+        """Enforce rate limiting by waiting if needed before making an API call."""
+        if self.rate_limit_seconds is None:
+            return
+
+        if self.last_call_time is not None:
+            elapsed = time.time() - self.last_call_time
+            if elapsed < self.rate_limit_seconds:
+                wait_time = self.rate_limit_seconds - elapsed
+                self.output.print_verbose(
+                    f"[dim]LLM rate limiting: waiting {wait_time:.1f}s before next API call...[/dim]"
+                )
+                await asyncio.sleep(wait_time)
+
+        self.last_call_time = time.time()
+
     async def generate_prompt(self, context: Dict[str, Any]) -> str:
         """Generate an interrogation prompt based on context."""
         phase = context.get("phase", "discovery")
@@ -222,6 +244,9 @@ class OpenAILLM(LLMInterface):
                     context=context.get("previous_responses", []),
                 )
 
+        # Enforce rate limiting before API call
+        await self._enforce_rate_limit()
+
         interrogation_prompt = await self.client.chat.completions.create(
             model=self.config.llm.model_name,
             messages=[
@@ -245,6 +270,9 @@ class OpenAILLM(LLMInterface):
         )
         self.output.print_verbose("[bold cyan]Discovery Prompt:[/bold cyan]")
         self.output.print_verbose(discovery_prompt)
+
+        # Enforce rate limiting before API call
+        await self._enforce_rate_limit()
 
         discovery = await self.client.chat.completions.create(
             model=self.config.llm.model_name,
@@ -298,6 +326,9 @@ class OpenAILLM(LLMInterface):
         self.output.print_verbose("[bold cyan]Analysis Prompt:[/bold cyan]")
         self.output.print_verbose(analysis_prompt)
 
+        # Enforce rate limiting before API call
+        await self._enforce_rate_limit()
+
         # First attempt - try to get a clean JSON response
         analysis = await self.client.chat.completions.create(
             model=self.config.llm.model_name,
@@ -338,6 +369,9 @@ class OpenAILLM(LLMInterface):
                     continue
 
             # If we get here, try one more time with a more explicit prompt
+            # Enforce rate limiting before retry API call
+            await self._enforce_rate_limit()
+
             analysis = await self.client.chat.completions.create(
                 model=self.config.llm.model_name,
                 messages=[
