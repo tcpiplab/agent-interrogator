@@ -1250,6 +1250,31 @@ Environment Variables:
         help="Ollama API endpoint URL (default: http://localhost:11434). Only used with --ollama.",
     )
 
+    parser.add_argument(
+        "--fuzz",
+        action="store_true",
+        help="Enable fuzzing mode. After interrogation completes, automatically run security fuzzing tests against discovered functions. Results are saved alongside the AgentProfile.",
+    )
+
+    parser.add_argument(
+        "--fuzz-rate-limit",
+        type=float,
+        default=3.0,
+        help="Delay in seconds between fuzzing requests (default: 3.0). Only used with --fuzz flag.",
+    )
+
+    parser.add_argument(
+        "--fuzz-max-payloads",
+        type=int,
+        help="Maximum payloads to test per parameter during fuzzing (default: all). Only used with --fuzz flag. Useful for faster testing.",
+    )
+
+    parser.add_argument(
+        "--fuzz-allow-destructive",
+        action="store_true",
+        help="Allow potentially destructive fuzzing payloads. USE WITH EXTREME CAUTION. By default, only non-destructive canary values are used for high-risk functions.",
+    )
+
     return parser.parse_args()
 
 
@@ -1440,6 +1465,128 @@ async def main():
                 console.print(
                     "[yellow]Warning: Invalid output format(s). Use 'json', 'markdown', or both.[/yellow]"
                 )
+
+        # Run fuzzing if requested
+        if args.fuzz:
+            console.print()
+            console.print(
+                Panel(
+                    "[bold yellow]Starting Security Fuzzing...[/bold yellow]\n\n"
+                    f"Rate limit: {args.fuzz_rate_limit}s per request\n"
+                    f"Max payloads per param: {args.fuzz_max_payloads or 'All'}\n"
+                    f"Mode: {'DESTRUCTIVE' if args.fuzz_allow_destructive else 'NON-DESTRUCTIVE'}",
+                    border_style="yellow",
+                )
+            )
+            console.print()
+
+            try:
+                from agent_interrogator.fuzzing_module import FuzzingEngine
+                from rich.progress import (
+                    BarColumn,
+                    Progress,
+                    SpinnerColumn,
+                    TextColumn,
+                    TimeElapsedColumn,
+                )
+
+                # Get the MCP session from callback
+                # Note: callback might be wrapped in rate limiter
+                actual_callback = callback
+                if hasattr(callback, 'wrapped_callback'):
+                    actual_callback = callback.wrapped_callback
+
+                # Initialize fuzzing engine
+                fuzzing_engine = FuzzingEngine(
+                    agent_profile=profile,
+                    mcp_session=actual_callback.session,
+                    rate_limit_delay=args.fuzz_rate_limit,
+                    non_destructive=not args.fuzz_allow_destructive,
+                    max_payloads_per_param=args.fuzz_max_payloads,
+                )
+
+                # Map targets
+                targets = fuzzing_engine.map_targets()
+                console.print(f"[green]Mapped {len(targets)} fuzzing targets[/green]")
+                console.print()
+
+                # Run fuzzing with progress bar
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    BarColumn(),
+                    TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                    TimeElapsedColumn(),
+                    console=console,
+                ) as progress:
+                    task = progress.add_task(
+                        "[cyan]Fuzzing MCP functions...",
+                        total=len(targets)
+                    )
+
+                    for target in targets:
+                        progress.update(
+                            task,
+                            description=f"[cyan]Fuzzing {target.get_full_name()}..."
+                        )
+                        await fuzzing_engine.fuzz_target(target)
+                        progress.advance(task)
+
+                # Get and display summary
+                summary = fuzzing_engine.get_vulnerability_summary()
+                console.print()
+                console.print(
+                    Panel(
+                        f"[bold]Total Tests:[/bold] {summary['total_tests']}\n"
+                        f"[bold]Vulnerabilities Found:[/bold] {summary['total_vulnerabilities']}\n"
+                        f"[bold]Vulnerable Functions:[/bold] {summary['vulnerable_functions']} / {summary['targets_tested']}",
+                        title="[bold green]Fuzzing Complete[/bold green]",
+                        border_style="green",
+                    )
+                )
+                console.print()
+
+                # Export fuzzing results
+                from urllib.parse import urlparse
+                parsed = urlparse(args.target)
+                hostname = parsed.hostname or "unknown"
+
+                fuzz_json_filename = f"fuzz-results-{hostname}.json"
+                fuzz_md_filename = f"fuzz-results-{hostname}.md"
+
+                fuzzing_engine.export_results(fuzz_json_filename, format="json")
+                fuzzing_engine.export_results(fuzz_md_filename, format="markdown")
+
+                console.print(f"[green]Exported fuzzing results to:[/green]")
+                console.print(f"  - {fuzz_json_filename}")
+                console.print(f"  - {fuzz_md_filename}")
+                console.print()
+
+                # Display high priority findings
+                if summary['high_priority_findings']:
+                    console.print("[bold red]High Priority Findings:[/bold red]")
+                    for i, finding in enumerate(summary['high_priority_findings'][:5], 1):
+                        console.print(f"  {i}. [cyan]{finding['function']}[/cyan]")
+                        console.print(f"     Parameter: {finding['parameter']}")
+                        console.print(f"     Flags: {', '.join(finding['flags'])}")
+                        console.print()
+
+                    if len(summary['high_priority_findings']) > 5:
+                        console.print(f"  ... and {len(summary['high_priority_findings']) - 5} more (see report files)")
+                        console.print()
+
+            except Exception as e:
+                console.print()
+                console.print(
+                    Panel(
+                        f"[bold red]FUZZING FAILED[/bold red]\n\n{str(e)}",
+                        border_style="red",
+                    )
+                )
+                if "--verbose" in sys.argv:
+                    traceback.print_exc()
+                # Don't fail the whole command, just warn
+                console.print("[yellow]Continuing despite fuzzing failure...[/yellow]")
 
         return EXIT_SUCCESS
 
