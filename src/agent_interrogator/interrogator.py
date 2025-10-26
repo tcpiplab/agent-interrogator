@@ -82,6 +82,9 @@ class AgentInterrogator:
             return OpenAILLM(self.config, self.output)
         elif self.config.llm.provider == ModelProvider.HUGGINGFACE:
             return HuggingFaceLLM(self.config, self.output)
+        elif self.config.llm.provider == ModelProvider.OLLAMA:
+            from .llm import OllamaLLM
+            return OllamaLLM(self.config, self.output)
         else:
             raise ValueError(f"Unsupported LLM provider: {self.config.llm.provider}")
 

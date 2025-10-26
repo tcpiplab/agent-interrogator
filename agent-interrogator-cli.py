@@ -11,10 +11,14 @@ FEATURES:
 - Bearer token authentication via environment variables
 - JSON and Markdown output formats
 - Colored terminal output for easy reading
+- Local Ollama LLM support (complete privacy, zero API costs)
 
 USAGE:
-    # Basic usage
+    # Basic usage with OpenAI
     python agent-interrogator-cli.py --target https://example.com/mcp
+
+    # Local Ollama LLM (no API key required)
+    python agent-interrogator-cli.py --target https://example.com/mcp --ollama --ollama-model-name llama2
 
     # With proxy (requires http_proxy/https_proxy env vars)
     python agent-interrogator-cli.py --target https://example.com/mcp --proxy
@@ -26,7 +30,7 @@ USAGE:
     python agent-interrogator-cli.py --target https://example.com/mcp --output json,markdown
 
 ENVIRONMENT VARIABLES:
-    OPENAI_API_KEY:     Required. Your OpenAI API key
+    OPENAI_API_KEY:     Required when using OpenAI. Your OpenAI API key
     MCP_AUTH_TOKEN:     Optional. Bearer token for MCP server authentication
     HF_TOKEN:           Optional. HuggingFace token (alternative to MCP_AUTH_TOKEN)
     http_proxy:         Optional. HTTP proxy URL (e.g., http://127.0.0.1:8080)
@@ -698,12 +702,13 @@ def check_proxy_configuration(use_proxy: bool) -> bool:
     return False
 
 
-def check_environment_variables(no_auth: bool = False, oauth_token: Optional[str] = None) -> Dict[str, Optional[str]]:
+def check_environment_variables(no_auth: bool = False, oauth_token: Optional[str] = None, use_ollama: bool = False) -> Dict[str, Optional[str]]:
     """Check for required and optional environment variables.
 
     Args:
         no_auth: If True, disable authentication and show warning
         oauth_token: Pre-authenticated OAuth token from CLI argument
+        use_ollama: If True, skip OPENAI_API_KEY requirement check
 
     Returns:
         Dict with environment variable values
@@ -714,13 +719,15 @@ def check_environment_variables(no_auth: bool = False, oauth_token: Optional[str
     openai_api_key = os.getenv("OPENAI_API_KEY")
     mcp_auth_token = os.getenv("MCP_AUTH_TOKEN") or os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")
 
-    if not openai_api_key:
+    # Skip OPENAI_API_KEY check when using Ollama
+    if not use_ollama and not openai_api_key:
         console.print(
             Panel(
                 "[red]Missing required environment variable: OPENAI_API_KEY[/red]\n\n"
                 "Set your OpenAI API key:\n\n"
                 "[cyan]export OPENAI_API_KEY='your-api-key-here'[/cyan]\n\n"
-                "Get your API key from: https://platform.openai.com/api-keys",
+                "Get your API key from: https://platform.openai.com/api-keys\n\n"
+                "[dim]Tip: Use --ollama to run with local models without an API key[/dim]",
                 title="Missing API Key",
                 border_style="red",
             )
@@ -1123,13 +1130,22 @@ def parse_arguments():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # OpenAI (requires OPENAI_API_KEY environment variable)
   %(prog)s --target https://example.com/mcp
-  %(prog)s --target https://huggingface.co/mcp --proxy
   %(prog)s --target https://example.com/mcp --openai-model-name gpt-4o --timeout 60
+
+  # Local Ollama (no API key required)
+  %(prog)s --target https://example.com/mcp --ollama --ollama-model-name llama2
+  %(prog)s --target https://example.com/mcp --ollama --ollama-model-name mistral
+
+  # With proxy support
+  %(prog)s --target https://huggingface.co/mcp --proxy
+
+  # Save output to files
   %(prog)s --target https://example.com/mcp --output json,markdown
 
 Environment Variables:
-  OPENAI_API_KEY    Required. Your OpenAI API key
+  OPENAI_API_KEY    Required when using OpenAI. Your OpenAI API key
   MCP_AUTH_TOKEN    Optional. Bearer token for MCP authentication
   HF_TOKEN          Optional. HuggingFace token (alternative to MCP_AUTH_TOKEN)
   http_proxy        Optional. HTTP proxy URL
@@ -1217,12 +1233,73 @@ Environment Variables:
         help='Add custom HTTP header to target MCP server requests (can be specified multiple times). Format: "Header-Name: value". Example: --header "X-Pentest: Company_Name" --header "X-Vendor: tcpiplab.com". Headers are only sent to the target MCP server, not to LLM API calls.',
     )
 
+    parser.add_argument(
+        "--ollama",
+        action="store_true",
+        help="Use local Ollama LLM instead of OpenAI. Requires --ollama-model-name. Provides complete privacy and zero API costs.",
+    )
+
+    parser.add_argument(
+        "--ollama-model-name",
+        help="Ollama model to use (e.g., llama2, mistral, codellama:13b). Required when --ollama is specified. Run 'ollama list' to see available models.",
+    )
+
+    parser.add_argument(
+        "--ollama-endpoint",
+        default="http://localhost:11434",
+        help="Ollama API endpoint URL (default: http://localhost:11434). Only used with --ollama.",
+    )
+
     return parser.parse_args()
 
 
 async def main():
     """Main CLI entry point."""
     args = parse_arguments()
+
+    # Validate Ollama arguments
+    if args.ollama and not args.ollama_model_name:
+        console.print(
+            Panel(
+                "[red]Missing required argument: --ollama-model-name[/red]\n\n"
+                "When using --ollama, you must specify which model to use.\n\n"
+                "[bold]Examples:[/bold]\n"
+                "  --ollama --ollama-model-name llama2\n"
+                "  --ollama --ollama-model-name mistral\n"
+                "  --ollama --ollama-model-name codellama:13b\n\n"
+                "Run 'ollama list' to see available models.",
+                title="Configuration Error",
+                border_style="red",
+            )
+        )
+        sys.exit(EXIT_GENERAL_ERROR)
+
+    if not args.ollama and args.ollama_model_name:
+        console.print(
+            Panel(
+                "[yellow]Warning: --ollama-model-name specified without --ollama[/yellow]\n\n"
+                "The --ollama-model-name flag only takes effect when --ollama is also specified.\n"
+                "Did you forget to add --ollama?",
+                title="Configuration Warning",
+                border_style="yellow",
+            )
+        )
+        sys.exit(EXIT_GENERAL_ERROR)
+
+    # Validate mutual exclusivity with OpenAI
+    if args.ollama and args.openai_model_name != "gpt-4o-mini":
+        console.print(
+            Panel(
+                "[red]Conflicting arguments: --ollama and --openai-model-name[/red]\n\n"
+                "You cannot use both Ollama and OpenAI models simultaneously.\n"
+                "Please choose one:\n\n"
+                "  • For OpenAI: Remove --ollama flag\n"
+                "  • For Ollama: Remove --openai-model-name flag\n",
+                title="Configuration Error",
+                border_style="red",
+            )
+        )
+        sys.exit(EXIT_GENERAL_ERROR)
 
     # Display banner
     console.print(
@@ -1238,14 +1315,20 @@ async def main():
     use_proxy = check_proxy_configuration(args.proxy)
 
     # Check environment variables (pass --no-auth flag and --oauth-token)
-    env_vars = check_environment_variables(no_auth=args.no_auth, oauth_token=args.oauth_token)
+    env_vars = check_environment_variables(no_auth=args.no_auth, oauth_token=args.oauth_token, use_ollama=args.ollama)
 
     # Parse and validate custom headers
     custom_headers = parse_and_validate_headers(args.custom_headers)
 
     console.print()
     console.print(f"[cyan]Target MCP Server:[/cyan] {args.target}")
-    console.print(f"[cyan]OpenAI Model:[/cyan] {args.openai_model_name}")
+    if args.ollama:
+        console.print(f"[cyan]LLM Provider:[/cyan] Ollama")
+        console.print(f"[cyan]Ollama Model:[/cyan] {args.ollama_model_name}")
+        console.print(f"[cyan]Ollama Endpoint:[/cyan] {args.ollama_endpoint}")
+    else:
+        console.print(f"[cyan]LLM Provider:[/cyan] OpenAI")
+        console.print(f"[cyan]OpenAI Model:[/cyan] {args.openai_model_name}")
     console.print(f"[cyan]Timeout:[/cyan] {args.timeout} seconds")
     console.print(f"[cyan]Max Iterations:[/cyan] {args.max_iterations}")
 
@@ -1276,15 +1359,31 @@ async def main():
         console.print()
 
     # Initialize configuration
-    config = InterrogationConfig(
-        llm=LLMConfig(
-            provider=ModelProvider.OPENAI,
-            model_name=args.openai_model_name,
-            api_key=env_vars["openai_api_key"],
-            rate_limit_seconds=float(args.rate_limit_llm) if args.rate_limit_llm else None,
-        ),
-        max_iterations=args.max_iterations,
-    )
+    if args.ollama:
+        from agent_interrogator.config import OllamaConfig
+        config = InterrogationConfig(
+            llm=LLMConfig(
+                provider=ModelProvider.OLLAMA,
+                model_name=args.ollama_model_name,
+                api_key=None,
+                ollama=OllamaConfig(
+                    endpoint=args.ollama_endpoint,
+                    timeout=float(args.timeout),
+                ),
+                rate_limit_seconds=float(args.rate_limit_llm) if args.rate_limit_llm else None,
+            ),
+            max_iterations=args.max_iterations,
+        )
+    else:
+        config = InterrogationConfig(
+            llm=LLMConfig(
+                provider=ModelProvider.OPENAI,
+                model_name=args.openai_model_name,
+                api_key=env_vars["openai_api_key"],
+                rate_limit_seconds=float(args.rate_limit_llm) if args.rate_limit_llm else None,
+            ),
+            max_iterations=args.max_iterations,
+        )
 
     # Initialize MCP callback
     callback = MCPCallback(

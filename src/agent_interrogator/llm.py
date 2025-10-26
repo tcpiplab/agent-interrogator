@@ -17,6 +17,15 @@ from openai import AsyncOpenAI
 from transformers import pipeline
 
 try:
+    from ollama import AsyncClient as OllamaAsyncClient
+    from ollama import ResponseError as OllamaResponseError
+    HAS_OLLAMA = True
+except ImportError:
+    HAS_OLLAMA = False
+    OllamaAsyncClient = None  # type: ignore
+    OllamaResponseError = None  # type: ignore
+
+try:
     import ane_transformers  # type: ignore
 
     HAS_ANE = platform.processor() in ["arm", "arm64"]
@@ -781,3 +790,336 @@ class HuggingFaceLLM(LLMInterface):
                 raise ValueError("No JSON found in generated response")
         except (json.JSONDecodeError, IndexError) as e:
             raise ValueError(f"Failed to process analysis response: {str(e)}")
+
+
+class OllamaLLM(LLMInterface):
+    """Ollama-based LLM implementation for local models."""
+
+    def __init__(self, config: InterrogationConfig, output_manager: "OutputManager"):
+        super().__init__(config, output_manager)
+        if config.llm.provider != ModelProvider.OLLAMA:
+            raise ValueError("OllamaLLM requires provider to be OLLAMA")
+
+        if not HAS_OLLAMA:
+            raise ImportError(
+                "Ollama package is not installed. Install it with: pip install ollama"
+            )
+
+        # Get Ollama-specific config or use defaults
+        from .config import OllamaConfig
+
+        ollama_config = config.llm.ollama or OllamaConfig()
+
+        # Initialize Ollama async client
+        self.client = OllamaAsyncClient(host=ollama_config.endpoint)
+        self.endpoint = ollama_config.endpoint
+        self.timeout = ollama_config.timeout
+        self.model_kwargs = config.llm.model_kwargs
+
+        # Rate limiting configuration (reuse existing pattern)
+        self.rate_limit_seconds = config.llm.rate_limit_seconds
+        self.last_call_time: Optional[float] = None
+
+        # Track whether health check has been performed
+        self._health_check_done = False
+
+    async def _check_ollama_health(self) -> None:
+        """Check if Ollama service is running and accessible (async, called on first use)."""
+        if self._health_check_done:
+            return
+
+        try:
+            # Try to list available models as a health check
+            await self.client.list()
+            self.output.print(
+                f"[green]Connected to Ollama at {self.endpoint}[/green]"
+            )
+            self._health_check_done = True
+        except Exception as e:
+            from rich.panel import Panel
+
+            self.output.print(
+                Panel(
+                    f"[bold red]Cannot connect to Ollama[/bold red]\n\n"
+                    f"Endpoint: {self.endpoint}\n"
+                    f"Error: {type(e).__name__}: {str(e)}\n\n"
+                    "[bold]Possible solutions:[/bold]\n\n"
+                    "1. Start Ollama service:\n"
+                    "   [cyan]ollama serve[/cyan]\n\n"
+                    "2. Verify Ollama is running:\n"
+                    "   [cyan]ollama list[/cyan]\n\n"
+                    "3. If using custom endpoint, verify with:\n"
+                    f"   [cyan]curl {self.endpoint}/api/tags[/cyan]",
+                    title="Ollama Connection Failed",
+                    border_style="red",
+                )
+            )
+            raise RuntimeError(f"Failed to connect to Ollama at {self.endpoint}") from e
+
+    async def _enforce_rate_limit(self) -> None:
+        """Enforce rate limiting by waiting if needed before making an API call."""
+        if self.rate_limit_seconds is None:
+            return
+
+        if self.last_call_time is not None:
+            elapsed = time.time() - self.last_call_time
+            if elapsed < self.rate_limit_seconds:
+                wait_time = self.rate_limit_seconds - elapsed
+                self.output.print_verbose(
+                    f"[dim]LLM rate limiting: waiting {wait_time:.1f}s before next API call...[/dim]"
+                )
+                await asyncio.sleep(wait_time)
+
+        self.last_call_time = time.time()
+
+    async def generate_prompt(self, context: Dict[str, Any]) -> str:
+        """Generate an interrogation prompt based on context."""
+        # Perform health check on first use
+        await self._check_ollama_health()
+
+        # Reuse exact same prompt generation logic as OpenAI
+        phase = context.get("phase", "discovery")
+        cycle = context.get("cycle", 0)
+
+        if cycle == 0:
+            if phase == "discovery":
+                # Initial discovery prompt
+                return INITIAL_DISCOVERY_PROMPT
+            else:
+                # Initial analysis prompt
+                return INITIAL_ANALYSIS_PROMPT_TEMPLATE.format(
+                    capability_name=context["capability"].name
+                )
+        else:
+            if phase == "discovery":
+                system_prompt = DISCOVERY_PROCESSING_SYSTEM_PROMPT
+                # Follow-up discovery prompts
+                discovered = context.get("discovered_capabilities", [])
+                next_focus = context.get("next_cycle_focus")
+
+                capabilities_str = "\n".join(
+                    f"- {cap.get('name', '')}: {cap.get('description', '')}"
+                    for cap in discovered
+                )
+
+                interrogation_prompt_request = DISCOVERY_PROMPT_TEMPLATE.format(
+                    capabilities_str=capabilities_str,
+                    focus_guidance=next_focus,
+                    context=context.get("previous_responses", []),
+                )
+            else:
+                system_prompt = ANALYSIS_PROCESSING_SYSTEM_PROMPT
+                # Analysis phase
+                capability = context["capability"]
+                discovered_functions = context.get("discovered_functions", [])
+                next_focus = context.get("next_cycle_focus")
+
+                functions_str = "\n".join(
+                    f"- {func.name}: {func.description or ''}"
+                    for func in discovered_functions
+                )
+
+                interrogation_prompt_request = ANALYSIS_PROMPT_TEMPLATE.format(
+                    capability=capability,
+                    functions_str=functions_str,
+                    focus_guidance=next_focus,
+                    context=context.get("previous_responses", []),
+                )
+
+        # Enforce rate limiting before API call
+        await self._enforce_rate_limit()
+
+        try:
+            # Call Ollama API
+            response = await self.client.chat(
+                model=self.config.llm.model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": interrogation_prompt_request},
+                ],
+                options={"temperature": 0.1, **self.model_kwargs},
+            )
+
+            # Extract content from Ollama response format
+            content = response.get("message", {}).get("content")
+            if content is None:
+                raise ValueError("Ollama API returned empty content")
+            return str(content)
+
+        except Exception as e:
+            if OllamaResponseError and isinstance(e, OllamaResponseError):
+                self.output.print(f"[red]Ollama API error: {e.error}[/red]")
+            raise
+
+    async def process_discovery_response(
+        self, response: str, context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Process the agent's response during capability discovery phase."""
+        discovery_prompt = DISCOVERY_PROCESSING_PROMPT_TEMPLATE.format(
+            json_format=DISCOVERY_JSON_SCHEMA, context=context, response=response
+        )
+        self.output.print_verbose("[bold cyan]Discovery Prompt:[/bold cyan]")
+        self.output.print_verbose(discovery_prompt)
+
+        # Enforce rate limiting before API call
+        await self._enforce_rate_limit()
+
+        try:
+            discovery = await self.client.chat(
+                model=self.config.llm.model_name,
+                messages=[
+                    {"role": "system", "content": DISCOVERY_PROCESSING_SYSTEM_PROMPT},
+                    {"role": "user", "content": discovery_prompt},
+                ],
+                options={"temperature": 0.1, **self.model_kwargs},
+            )
+
+            content = discovery.get("message", {}).get("content")
+            if content is None:
+                raise ValueError("Ollama API returned empty content")
+
+            # Strip whitespace
+            content = content.strip()
+
+            # Try to extract JSON from markdown code block if present
+            import re
+
+            # Check for markdown code block
+            markdown_match = re.search(
+                r"```(?:json)?\s*\n?(.*?)\n?```", content, re.DOTALL
+            )
+            if markdown_match:
+                content = markdown_match.group(1).strip()
+
+            result = json.loads(content)
+            if isinstance(result, dict):
+                return result
+            else:
+                raise ValueError("Expected dictionary response from JSON")
+
+        except json.JSONDecodeError as e:
+            self.output.print_verbose(
+                "[red]Failed to parse JSON response. Raw content:[/red]"
+            )
+            self.output.print_verbose(content)
+            raise ValueError(f"Failed to process discovery response: {str(e)}")
+        except Exception as e:
+            if OllamaResponseError and isinstance(e, OllamaResponseError):
+                self.output.print(f"[red]Ollama API error: {e.error}[/red]")
+            raise
+
+    async def process_analysis_response(
+        self, response: str, context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Process the agent's response during capability analysis phase."""
+        analysis_prompt = ANALYSIS_PROCESSING_PROMPT_TEMPLATE.format(
+            capability_name=context["capability"].name,
+            json_format=ANALYSIS_JSON_SCHEMA,
+            response=response,
+            context=context,
+        )
+
+        self.output.print_verbose("[bold cyan]Analysis Prompt:[/bold cyan]")
+        self.output.print_verbose(analysis_prompt)
+
+        # Enforce rate limiting before API call
+        await self._enforce_rate_limit()
+
+        try:
+            # First attempt - try to get a clean JSON response
+            analysis = await self.client.chat(
+                model=self.config.llm.model_name,
+                messages=[
+                    {"role": "system", "content": ANALYSIS_PROCESSING_SYSTEM_PROMPT},
+                    {"role": "user", "content": analysis_prompt},
+                ],
+                options={"temperature": 0.1, **self.model_kwargs},
+            )
+
+            content = analysis.get("message", {}).get("content")
+            if content is None:
+                raise ValueError("Ollama API returned empty content")
+            content = content.strip()
+
+            # Debug: Show what we received from Ollama
+            self.output.print_verbose("[bold cyan]Ollama Response Content:[/bold cyan]")
+            self.output.print_verbose(content[:500] if len(content) > 500 else content)
+
+            # Try to extract JSON from markdown code block if present (same as discovery phase)
+            import re
+            markdown_match = re.search(
+                r"```(?:json)?\s*\n?(.*?)\n?```", content, re.DOTALL
+            )
+            if markdown_match:
+                content = markdown_match.group(1).strip()
+                self.output.print_verbose("[cyan]Extracted JSON from markdown code block[/cyan]")
+
+            try:
+                # Try to parse the raw content first
+                result = json.loads(content)
+                if isinstance(result, dict):
+                    return result
+                else:
+                    raise ValueError("Expected dictionary response from JSON")
+            except json.JSONDecodeError:
+                # If that fails, try to extract JSON from the content
+                import re
+
+                json_matches = re.findall(r"\{[^{}]*\}", content)
+
+                for json_str in json_matches:
+                    try:
+                        # Try to parse each potential JSON object
+                        result = json.loads(json_str)
+                        # Verify it has the expected structure
+                        if isinstance(result, dict) and "functions" in result:
+                            return result
+                    except json.JSONDecodeError:
+                        continue
+
+                # If we get here, try one more time with a more explicit prompt
+                # Enforce rate limiting before retry API call
+                await self._enforce_rate_limit()
+
+                analysis = await self.client.chat(
+                    model=self.config.llm.model_name,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "You MUST respond with ONLY a valid JSON object following the schema exactly. No other text or explanation.",
+                        },
+                        {"role": "user", "content": analysis_prompt},
+                    ],
+                    options={"temperature": 0.1, **self.model_kwargs},
+                )
+
+                content = analysis.get("message", {}).get("content")
+                if content is None or not content.strip():
+                    self.output.print("[red]Ollama returned empty content on retry attempt[/red]")
+                    raise ValueError("Ollama API returned empty content on retry")
+                content = content.strip()
+
+                # Debug: Show retry response
+                self.output.print_verbose("[bold cyan]Ollama Retry Response:[/bold cyan]")
+                self.output.print_verbose(content[:500] if len(content) > 500 else content)
+
+                try:
+                    result = json.loads(content)
+                    if isinstance(result, dict):
+                        return result
+                    else:
+                        raise ValueError("Expected dictionary response from JSON")
+                except json.JSONDecodeError as e:
+                    # Show content even in standard mode when error occurs
+                    self.output.print(
+                        "[red]Failed to parse JSON response from Ollama. Raw content:[/red]"
+                    )
+                    self.output.print(f"[dim]{content[:500]}{'...' if len(content) > 500 else ''}[/dim]")
+                    raise ValueError(
+                        f"Failed to process analysis response after multiple attempts: {str(e)}"
+                    )
+
+        except Exception as e:
+            if OllamaResponseError and isinstance(e, OllamaResponseError):
+                self.output.print(f"[red]Ollama API error: {e.error}[/red]")
+            raise

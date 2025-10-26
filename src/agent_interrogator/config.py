@@ -11,6 +11,7 @@ class ModelProvider(str, Enum):
 
     OPENAI = "openai"
     HUGGINGFACE = "huggingface"
+    OLLAMA = "ollama"
 
 
 class OutputMode(str, Enum):
@@ -44,11 +45,24 @@ class HuggingFaceConfig(BaseModel):
     )
 
 
+class OllamaConfig(BaseModel):
+    """Ollama-specific configuration options."""
+
+    endpoint: str = Field(
+        "http://localhost:11434",
+        description="Ollama API endpoint URL (default: http://localhost:11434)",
+    )
+    timeout: float = Field(
+        30.0,
+        description="Request timeout in seconds for Ollama API calls",
+    )
+
+
 class LLMConfig(BaseModel):
     """Configuration for the LLM to be used for interrogation."""
 
     provider: ModelProvider = Field(
-        ..., description="The provider of the LLM (OpenAI or HuggingFace)"
+        ..., description="The provider of the LLM (OpenAI, HuggingFace, or Ollama)"
     )
     model_name: str = Field(..., description="Name of the model to use")
     api_key: Optional[str] = Field(
@@ -59,6 +73,9 @@ class LLMConfig(BaseModel):
     )
     huggingface: Optional[HuggingFaceConfig] = Field(
         None, description="HuggingFace-specific configuration options"
+    )
+    ollama: Optional[OllamaConfig] = Field(
+        None, description="Ollama-specific configuration options"
     )
     rate_limit_seconds: Optional[float] = Field(
         None, description="Minimum delay in seconds between LLM API calls. Used to avoid rate limits during extended interrogation sessions."
